@@ -1,10 +1,14 @@
 import axios from "axios";
 import { CONST } from "../../../config";
 
-export const uploadImage = async (file, quality = 75) => {
+export const uploadImage = async (file, uploadOptions) => {
   const formData = new FormData();
   formData.append('upload', file);
-  formData.append('quality', quality); // Include default or passed quality
+  formData.append('quality', uploadOptions.quality); 
+  formData.append('preserve_format', uploadOptions.preserve_format); 
+  if(uploadOptions.target_size_kb){
+    formData.append('target_size_kb', uploadOptions.target_size_kb); 
+  }
 
   const response = await axios.post(CONST.uri.image.COMPRESS_IMAGE, formData, {
     headers: {

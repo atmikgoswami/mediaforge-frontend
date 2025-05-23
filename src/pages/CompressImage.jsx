@@ -1,17 +1,19 @@
 import { useState, useEffect, useRef } from "react";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { uploadImage } from "../services/http/image";
 import { fetchProgress } from "../services/http/common";
 import { 
   Upload, 
   ArrowDownToLine, 
-  Image as ImageIcon, 
+  Image, 
   X, 
   Check, 
   Loader2, 
   Download, 
   RefreshCw,
-  CloudUpload
+  CloudUpload,
+  Settings,
+  ChevronDown
 } from "lucide-react";
 
 export default function CompressImage() {
@@ -28,6 +30,10 @@ export default function CompressImage() {
   const [resultUrl, setResultUrl] = useState(null);
   const [error, setError] = useState(null);
 
+  // Settings states
+  const [showSettings, setShowSettings] = useState(false);
+  const [preserveFormat, setPreserveFormat] = useState(true);
+  const [targetSizeKb, setTargetSizeKb] = useState('');
   
   // Progress polling
   const progressInterval = useRef(null);
@@ -84,7 +90,14 @@ export default function CompressImage() {
     setProgress(0);
 
     try {
-      const { task_id } = await uploadImage(file);
+      // Include settings in the upload
+      const uploadOptions = {
+        quality: 75,
+        preserve_format: preserveFormat,
+        target_size_kb: targetSizeKb ? parseInt(targetSizeKb) : null
+      };
+      
+      const { task_id } = await uploadImage(file, uploadOptions);
       setTaskId(task_id);
       setProcessingStatus("processing");
       startProgressPolling(task_id);
@@ -192,7 +205,81 @@ export default function CompressImage() {
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
         {/* File Upload Section */}
         <div className="p-6 border-b border-gray-100">
-          <h2 className="text-lg font-semibold text-gray-800 mb-4">Upload Image</h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold text-gray-800">Upload Image</h2>
+            
+            {/* Settings Button */}
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={() => setShowSettings(!showSettings)}
+              className={`flex items-center px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                showSettings 
+                  ? 'bg-blue-100 text-blue-700' 
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+              }`}
+            >
+              <Settings className="mr-2 h-4 w-4" />
+              Settings
+              <ChevronDown className={`ml-1 h-4 w-4 transition-transform ${
+                showSettings ? 'rotate-180' : ''
+              }`} />
+            </motion.button>
+          </div>
+
+          {/* Settings Panel */}
+          <AnimatePresence>
+            {showSettings && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.2 }}
+                className="mb-6 bg-gray-50 rounded-lg p-4 border"
+              >
+                <h3 className="text-sm font-semibold text-gray-800 mb-3">Compression Settings</h3>
+                
+                <div className="space-y-4">
+                  {/* Preserve Format Option */}
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      id="preserveFormat"
+                      checked={preserveFormat}
+                      onChange={(e) => setPreserveFormat(e.target.checked)}
+                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                    />
+                    <label htmlFor="preserveFormat" className="ml-3 text-sm text-gray-700">
+                      <span className="font-medium">Preserve Original Image Format</span>
+                      <p className="text-gray-500 text-xs mt-1">
+                        Keep the same file format (JPG, PNG, etc.) instead of auto-converting to optimal format
+                      </p>
+                    </label>
+                  </div>
+
+                  {/* Target Size Option */}
+                  <div>
+                    <label htmlFor="targetSize" className="block text-sm font-medium text-gray-700 mb-2">
+                      Target Image Size (KB)
+                    </label>
+                    <input
+                      type="number"
+                      id="targetSize"
+                      value={targetSizeKb}
+                      onChange={(e) => setTargetSizeKb(e.target.value)}
+                      placeholder="Leave empty for auto optimization"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 text-sm"
+                      min="1"
+                      max="10240"
+                    />
+                    <p className="text-gray-500 text-xs mt-1">
+                      Specify a target file size. Leave empty for automatic optimization.
+                    </p>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {!file ? (
             <motion.div
@@ -261,7 +348,7 @@ export default function CompressImage() {
                       className="max-h-full max-w-full object-contain" 
                     />
                   ) : (
-                    <ImageIcon className="h-12 w-12 text-gray-400" />
+                    <Image className="h-12 w-12 text-gray-400" />
                   )}
                 </div>
               </div>
@@ -277,6 +364,22 @@ export default function CompressImage() {
                       <p className="text-sm text-gray-500 mt-1">
                         {formatFileSize(file.size)}
                       </p>
+                      
+                      {/* Settings Summary */}
+                      <div className="mt-3 space-y-1">
+                        <div className="flex items-center text-xs text-gray-600">
+                          <span className={`inline-block w-2 h-2 rounded-full mr-2 ${
+                            preserveFormat ? 'bg-green-500' : 'bg-gray-400'
+                          }`}></span>
+                          Format: {preserveFormat ? 'Preserve original' : 'Auto-optimize'}
+                        </div>
+                        <div className="flex items-center text-xs text-gray-600">
+                          <span className={`inline-block w-2 h-2 rounded-full mr-2 ${
+                            targetSizeKb ? 'bg-blue-500' : 'bg-gray-400'
+                          }`}></span>
+                          Target size: {targetSizeKb ? `${targetSizeKb} KB` : 'Auto-optimize'}
+                        </div>
+                      </div>
                     </div>
                     <button 
                       onClick={handleReset}
