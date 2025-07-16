@@ -1,26 +1,27 @@
 import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { compressPDF} from "../services/http/pdf";
-import { fetchProgress } from "../services/http/common";
-import { 
-  Upload, 
-  ArrowDownToLine, 
-  FileText, 
-  X, 
-  Check, 
-  Loader2, 
-  Download, 
+import { compressPDF } from "../services/http/pdf";
+import useDrivePicker from "react-google-drive-picker";
+import { getAccessToken } from "../utils/googleDrive";
+import {
+  Upload,
+  ArrowDownToLine,
+  FileText,
+  X,
+  Check,
+  Loader2,
+  Download,
   RefreshCw,
   CloudUpload,
   Settings,
-  Info
+  Info,
 } from "lucide-react";
 
 export default function CompressPDF() {
   // File states
   const [file, setFile] = useState(null);
   const fileInputRef = useRef(null);
-  
+
   // Processing states
   const [isUploading, setIsUploading] = useState(false);
   const [taskId, setTaskId] = useState(null);
@@ -28,11 +29,13 @@ export default function CompressPDF() {
   const [processingStatus, setProcessingStatus] = useState(null); // 'uploading', 'processing', 'completed', 'error'
   const [resultUrl, setResultUrl] = useState(null);
   const [error, setError] = useState(null);
-  
+  const socketRef = useRef(null);
+  const [openPicker] = useDrivePicker();
+
   // Compression settings
   const [compressionLevel, setCompressionLevel] = useState("medium"); // low, medium, high
   const [showSettings, setShowSettings] = useState(false);
-  
+
   // Progress polling
   const progressInterval = useRef(null);
 
@@ -48,39 +51,115 @@ export default function CompressPDF() {
   // Handle file selection
   const handleFileChange = (event) => {
     const selectedFile = event.target.files[0];
-    
+
     if (!selectedFile) return;
-    
+
     // Check file size (25MB max)
     if (selectedFile.size > 25 * 1024 * 1024) {
       setError("File size exceeds 25MB limit.");
       return;
     }
-    
+
     // Check file type
     if (selectedFile.type !== "application/pdf") {
       setError("Please select a PDF file.");
       return;
     }
-    
+
     setError(null);
     setFile(selectedFile);
   };
 
   // Handle Google Drive selection
-  const handleGoogleDriveSelect = () => {
-    // This would typically integrate with Google Drive Picker API
-    // For this example, we'll just show a message
-    alert("Google Drive integration would open a picker here");
-    
-    // Simulating a file selection for demonstration
-    // In a real implementation, this would come from the Google Drive API
-    // setFile(...) would happen after selection
+  const handleGoogleDriveSelect = async () => {
+    try {
+      const accessToken = await getAccessToken();
+
+      openPicker({
+        clientId: import.meta.env.VITE_GDRIVE_CLIENT_ID,
+        developerKey: import.meta.env.VITE_GDRIVE_API_KEY,
+        token: accessToken, // ✅ required for download
+        viewId: "PDFS",
+        showUploadView: true,
+        showUploadFolders: true,
+        supportDrives: true,
+        multiselect: false,
+        callbackFunction: async (data) => {
+          if (data.action !== "picked") return;
+          const doc = data.docs[0];
+          console.log("Picked doc:", doc);
+
+          try {
+            const res = await fetch(
+              `https://www.googleapis.com/drive/v3/files/${doc.id}?alt=media`,
+              {
+                headers: {
+                  Authorization: `Bearer ${accessToken}`, // ✅ auth for download
+                },
+              }
+            );
+
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+            const blob = await res.blob();
+            const file = new File([blob], doc.name, { type: doc.mimeType });
+            setFile(file);
+            setFilePreview(URL.createObjectURL(blob));
+            setError(null);
+          } catch (err) {
+            console.error("Download failed:", err);
+            setError("Couldn’t download the selected Drive file.");
+          }
+        },
+      });
+    } catch (err) {
+      console.error("Google Auth Error:", err);
+      setError("Google Drive authentication failed.");
+    }
   };
 
   // Toggle compression settings panel
   const toggleSettings = () => {
     setShowSettings(!showSettings);
+  };
+
+  const startWebSocketListener = (taskId) => {
+    // close any previous socket
+    if (socketRef.current) socketRef.current.close();
+
+    const socket = new WebSocket(`ws://localhost:8080/ws/progress/${taskId}`);
+    socketRef.current = socket; // save for later cleanup
+
+    socket.onopen = () => {
+      console.log("WS open");
+    };
+
+    socket.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+
+      if (data.progress !== undefined) setProgress(+data.progress);
+
+      if (data.status === "completed") {
+        setResultUrl(data.result_url);
+        setProcessingStatus("completed");
+        socket.close();
+      } else if (data.status === "failed") {
+        setError(data.error || "Conversion failed.");
+        setProcessingStatus("error");
+        socket.close();
+      } else if (["queued", "processing"].includes(data.status)) {
+        setProcessingStatus("processing");
+      }
+    };
+
+    socket.onerror = (err) => {
+      console.warn("WS error:", err);
+      setError("WebSocket connection failed.");
+      setProcessingStatus("error");
+      socket.close();
+    };
+
+    socket.onclose = () => console.log("WS closed");
   };
 
   // Upload and process the image
@@ -95,37 +174,12 @@ export default function CompressPDF() {
       const { task_id } = await compressPDF(file, compressionLevel);
       setTaskId(task_id);
       setProcessingStatus("processing");
-      startProgressPolling(task_id);
+      startWebSocketListener(task_id);
     } catch (err) {
       setError("Failed to upload image. Please try again.");
       setProcessingStatus("error");
       setIsUploading(false);
     }
-  };
-
-  // Poll for task progress
-  const startProgressPolling = (taskId) => {
-    if (progressInterval.current) {
-      clearInterval(progressInterval.current);
-    }
-
-    progressInterval.current = setInterval(async () => {
-      try {
-        const { progress, result_url } = await fetchProgress(taskId);
-
-        setProgress(progress);
-
-        if (progress >= 100) {
-          clearInterval(progressInterval.current);
-          setProcessingStatus("completed");
-          if (result_url) setResultUrl(result_url);
-        }
-      } catch (err) {
-        clearInterval(progressInterval.current);
-        setError("Failed to fetch progress.");
-        setProcessingStatus("error");
-      }
-    }, 1000);
   };
 
   //Download Image
@@ -140,7 +194,8 @@ export default function CompressPDF() {
       link.href = url;
 
       // You can set a default filename here
-      link.download = "compressed_pdf" + resultUrl.substring(resultUrl.lastIndexOf("."));
+      link.download =
+        "compressed_pdf" + resultUrl.substring(resultUrl.lastIndexOf("."));
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -155,7 +210,7 @@ export default function CompressPDF() {
     if (progressInterval.current) {
       clearInterval(progressInterval.current);
     }
-    
+
     setFile(null);
     setTaskId(null);
     setProgress(0);
@@ -163,7 +218,7 @@ export default function CompressPDF() {
     setResultUrl(null);
     setError(null);
     setIsUploading(false);
-    
+
     // Reset file input
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -173,9 +228,8 @@ export default function CompressPDF() {
   // Clean up interval on component unmount
   useEffect(() => {
     return () => {
-      if (progressInterval.current) {
-        clearInterval(progressInterval.current);
-      }
+      if (socketRef.current) socketRef.current.close();
+      if (progressInterval.current) clearInterval(progressInterval.current);
     };
   }, []);
 
@@ -187,10 +241,13 @@ export default function CompressPDF() {
         transition={{ duration: 0.5 }}
         className="text-center mb-8"
       >
-        <h1 className="text-3xl font-bold text-gray-800 mb-4">PDF Compression</h1>
+        <h1 className="text-3xl font-bold text-gray-800 mb-4">
+          PDF Compression
+        </h1>
         <p className="text-gray-600 max-w-2xl mx-auto">
-          Reduce the file size of your PDF documents while maintaining readability. 
-          Ideal for email attachments, website uploads, and saving storage space.
+          Reduce the file size of your PDF documents while maintaining
+          readability. Ideal for email attachments, website uploads, and saving
+          storage space.
         </p>
       </motion.div>
 
@@ -198,7 +255,9 @@ export default function CompressPDF() {
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
         {/* File Upload Section */}
         <div className="p-6 border-b border-gray-100">
-          <h2 className="text-lg font-semibold text-gray-800 mb-4">Upload PDF</h2>
+          <h2 className="text-lg font-semibold text-gray-800 mb-4">
+            Upload PDF
+          </h2>
 
           {!file ? (
             <motion.div
@@ -250,9 +309,7 @@ export default function CompressPDF() {
               </motion.button>
 
               {error && (
-                <div className="mt-4 text-sm text-red-600">
-                  {error}
-                </div>
+                <div className="mt-4 text-sm text-red-600">{error}</div>
               )}
             </motion.div>
           ) : (
@@ -280,9 +337,8 @@ export default function CompressPDF() {
                       <p className="text-sm text-gray-500 mt-1">
                         {formatFileSize(file.size)}
                       </p>
-                      
                     </div>
-                    <button 
+                    <button
                       onClick={handleReset}
                       className="p-1.5 rounded-full bg-gray-200 hover:bg-gray-300 text-gray-500"
                     >
@@ -295,7 +351,7 @@ export default function CompressPDF() {
                   <div className="space-y-4">
                     {/* Compression Settings Button */}
                     <div className="flex justify-end">
-                      <button 
+                      <button
                         onClick={toggleSettings}
                         className="flex items-center text-sm text-gray-600 hover:text-gray-900"
                       >
@@ -303,17 +359,19 @@ export default function CompressPDF() {
                         Compression Settings
                       </button>
                     </div>
-                    
+
                     {/* Settings Panel */}
                     {showSettings && (
                       <div className="bg-gray-50 rounded-lg p-4 mb-4">
-                        <h4 className="text-sm font-medium text-gray-700 mb-3">Compression Level</h4>
+                        <h4 className="text-sm font-medium text-gray-700 mb-3">
+                          Compression Level
+                        </h4>
                         <div className="flex space-x-3">
                           <button
                             onClick={() => setCompressionLevel("low")}
                             className={`px-3 py-1.5 text-xs font-medium rounded ${
-                              compressionLevel === "low" 
-                                ? "bg-blue-100 text-blue-800 border border-blue-300" 
+                              compressionLevel === "low"
+                                ? "bg-blue-100 text-blue-800 border border-blue-300"
                                 : "bg-white border border-gray-300 text-gray-700"
                             }`}
                           >
@@ -322,8 +380,8 @@ export default function CompressPDF() {
                           <button
                             onClick={() => setCompressionLevel("medium")}
                             className={`px-3 py-1.5 text-xs font-medium rounded ${
-                              compressionLevel === "medium" 
-                                ? "bg-blue-100 text-blue-800 border border-blue-300" 
+                              compressionLevel === "medium"
+                                ? "bg-blue-100 text-blue-800 border border-blue-300"
                                 : "bg-white border border-gray-300 text-gray-700"
                             }`}
                           >
@@ -332,8 +390,8 @@ export default function CompressPDF() {
                           <button
                             onClick={() => setCompressionLevel("high")}
                             className={`px-3 py-1.5 text-xs font-medium rounded ${
-                              compressionLevel === "high" 
-                                ? "bg-blue-100 text-blue-800 border border-blue-300" 
+                              compressionLevel === "high"
+                                ? "bg-blue-100 text-blue-800 border border-blue-300"
                                 : "bg-white border border-gray-300 text-gray-700"
                             }`}
                           >
@@ -343,12 +401,13 @@ export default function CompressPDF() {
                         <div className="mt-2 flex items-start">
                           <Info className="h-4 w-4 text-gray-400 mr-1 flex-shrink-0 mt-0.5" />
                           <p className="text-xs text-gray-500">
-                            Higher compression may affect image quality and text sharpness in PDFs with complex graphics.
+                            Higher compression may affect image quality and text
+                            sharpness in PDFs with complex graphics.
                           </p>
                         </div>
                       </div>
                     )}
-                    
+
                     {/* Action Buttons */}
                     <div className="flex space-x-3">
                       <motion.button
@@ -381,16 +440,18 @@ export default function CompressPDF() {
                         transition={{ duration: 0.5 }}
                       ></motion.div>
                     </div>
-                    
+
                     {/* Status Text */}
                     <div className="flex items-center">
                       {processingStatus === "uploading" && (
                         <>
                           <Loader2 className="animate-spin mr-2 h-4 w-4 text-red-600" />
-                          <span className="text-sm text-gray-700">Uploading PDF...</span>
+                          <span className="text-sm text-gray-700">
+                            Uploading PDF...
+                          </span>
                         </>
                       )}
-                      
+
                       {processingStatus === "processing" && (
                         <>
                           <Loader2 className="animate-spin mr-2 h-4 w-4 text-red-600" />
@@ -399,14 +460,16 @@ export default function CompressPDF() {
                           </span>
                         </>
                       )}
-                      
+
                       {processingStatus === "completed" && (
                         <>
                           <Check className="mr-2 h-4 w-4 text-green-600" />
-                          <span className="text-sm text-gray-700">Compression completed!</span>
+                          <span className="text-sm text-gray-700">
+                            Compression completed!
+                          </span>
                         </>
                       )}
-                      
+
                       {processingStatus === "error" && (
                         <>
                           <X className="mr-2 h-4 w-4 text-red-600" />
@@ -414,7 +477,7 @@ export default function CompressPDF() {
                         </>
                       )}
                     </div>
-                    
+
                     {/* Result Actions */}
                     {processingStatus === "completed" && resultUrl && (
                       <div className="flex space-x-3 mt-4">
@@ -448,24 +511,35 @@ export default function CompressPDF() {
 
         {/* Information Section */}
         <div className="p-6 bg-gray-50">
-          <h3 className="text-lg font-semibold text-gray-800 mb-3">Why Compress PDFs?</h3>
+          <h3 className="text-lg font-semibold text-gray-800 mb-3">
+            Why Compress PDFs?
+          </h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="bg-white p-4 rounded-lg shadow-sm">
-              <h4 className="font-semibold text-red-600 mb-2">Email Friendly</h4>
+              <h4 className="font-semibold text-red-600 mb-2">
+                Email Friendly
+              </h4>
               <p className="text-sm text-gray-600">
-                Most email services limit attachment size. Compressed PDFs are easier to send and receive.
+                Most email services limit attachment size. Compressed PDFs are
+                easier to send and receive.
               </p>
             </div>
             <div className="bg-white p-4 rounded-lg shadow-sm">
-              <h4 className="font-semibold text-red-600 mb-2">Save Storage Space</h4>
+              <h4 className="font-semibold text-red-600 mb-2">
+                Save Storage Space
+              </h4>
               <p className="text-sm text-gray-600">
-                Reduce file sizes by up to 70% while keeping document quality acceptable.
+                Reduce file sizes by up to 70% while keeping document quality
+                acceptable.
               </p>
             </div>
             <div className="bg-white p-4 rounded-lg shadow-sm">
-              <h4 className="font-semibold text-red-600 mb-2">Faster Uploads</h4>
+              <h4 className="font-semibold text-red-600 mb-2">
+                Faster Uploads
+              </h4>
               <p className="text-sm text-gray-600">
-                Website uploads and document sharing become quicker with smaller file sizes.
+                Website uploads and document sharing become quicker with smaller
+                file sizes.
               </p>
             </div>
           </div>
@@ -488,9 +562,12 @@ export default function CompressPDF() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Intelligent compression</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Intelligent compression
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Our smart algorithm optimizes text, images, and graphics separately for best results.
+                Our smart algorithm optimizes text, images, and graphics
+                separately for best results.
               </p>
             </div>
           </div>
@@ -499,9 +576,12 @@ export default function CompressPDF() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Preserves content fidelity</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Preserves content fidelity
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Text remains sharp and readable even after significant compression.
+                Text remains sharp and readable even after significant
+                compression.
               </p>
             </div>
           </div>
@@ -510,9 +590,12 @@ export default function CompressPDF() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Form field preservation</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Form field preservation
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Interactive elements like forms and links remain functional after compression.
+                Interactive elements like forms and links remain functional
+                after compression.
               </p>
             </div>
           </div>
@@ -521,9 +604,12 @@ export default function CompressPDF() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Batch processing</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Smart and Secure
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Premium users can compress multiple PDFs at once with our bulk processing tool.
+                All PDF compression is processed securely with fast upload and
+                download speeds.
               </p>
             </div>
           </div>

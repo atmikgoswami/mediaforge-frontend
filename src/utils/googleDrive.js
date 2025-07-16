@@ -1,14 +1,15 @@
-export const downloadDriveFile = async (fileId, accessToken) => {
-  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
+export function getAccessToken() {
+  return new Promise((resolve, reject) => {
+    window.google.accounts.oauth2.initTokenClient({
+      client_id: import.meta.env.VITE_GDRIVE_CLIENT_ID,
+      scope: "https://www.googleapis.com/auth/drive.readonly",
+      callback: (tokenResponse) => {
+        if (tokenResponse?.access_token) {
+          resolve(tokenResponse.access_token);
+        } else {
+          reject("Failed to get token");
+        }
+      },
+    }).requestAccessToken();
   });
-
-  if (!response.ok) {
-    throw new Error("Google Drive file download failed");
-  }
-
-  return await response.blob();
-};
-
+}

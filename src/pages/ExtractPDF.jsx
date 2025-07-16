@@ -1,27 +1,31 @@
 import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { extractPDF } from "../services/http/pdf";
-import { fetchProgress } from "../services/http/common";
-import { 
-  Upload, 
-  ArrowDownToLine, 
-  FileText, 
-  X, 
-  Check, 
-  Loader2, 
-  Download, 
+import { PDFDocument } from "pdf-lib";
+import useDrivePicker from "react-google-drive-picker";
+import { getAccessToken } from "../utils/googleDrive";
+import {
+  Upload,
+  ArrowDownToLine,
+  FileText,
+  X,
+  Check,
+  Loader2,
+  Download,
   RefreshCw,
   CloudUpload,
   Settings,
   Info,
-  Scissors
+  Scissors,
 } from "lucide-react";
 
 export default function ExtractPDF() {
   // File states
   const [file, setFile] = useState(null);
+  const [totalPages, setTotalPages] = useState(null);
+  const [isLoadingPageCount, setIsLoadingPageCount] = useState(false);
   const fileInputRef = useRef(null);
-  
+
   // Processing states
   const [isUploading, setIsUploading] = useState(false);
   const [taskId, setTaskId] = useState(null);
@@ -29,12 +33,13 @@ export default function ExtractPDF() {
   const [processingStatus, setProcessingStatus] = useState(null); // 'uploading', 'processing', 'completed', 'error'
   const [resultUrl, setResultUrl] = useState(null);
   const [error, setError] = useState(null);
-  
+  const socketRef = useRef(null);
+  const [openPicker] = useDrivePicker();
+
   // Extraction settings
   const [startPage, setStartPage] = useState(1);
   const [endPage, setEndPage] = useState(1);
-  const [showSettings, setShowSettings] = useState(false);
-  
+
   // Progress polling
   const progressInterval = useRef(null);
 
@@ -47,42 +52,97 @@ export default function ExtractPDF() {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
   };
 
+  // Get PDF page count
+  const getPDFPageCount = async (file) => {
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const pdfDoc = await PDFDocument.load(arrayBuffer);
+      const pageCount = pdfDoc.getPageCount();
+      return pageCount;
+    } catch (err) {
+      console.error("Failed to get page count:", err);
+      return 1;
+    }
+  };
+
   // Handle file selection
-  const handleFileChange = (event) => {
+  const handleFileChange = async (event) => {
     const selectedFile = event.target.files[0];
-    
+
     if (!selectedFile) return;
-    
+
     // Check file size (25MB max)
     if (selectedFile.size > 25 * 1024 * 1024) {
       setError("File size exceeds 25MB limit.");
       return;
     }
-    
+
     // Check file type
     if (selectedFile.type !== "application/pdf") {
       setError("Please select a PDF file.");
       return;
     }
-    
+
     setError(null);
     setFile(selectedFile);
+    setIsLoadingPageCount(true);
+
+    // Get PDF page count
+    const pageCount = await getPDFPageCount(selectedFile);
+    setTotalPages(pageCount);
+    setIsLoadingPageCount(false);
+
+    // Reset page range to safe defaults
+    setStartPage(1);
+    setEndPage(Math.min(pageCount || 1, 1));
   };
 
   // Handle Google Drive selection
-  const handleGoogleDriveSelect = () => {
-    // This would typically integrate with Google Drive Picker API
-    // For this example, we'll just show a message
-    alert("Google Drive integration would open a picker here");
-    
-    // Simulating a file selection for demonstration
-    // In a real implementation, this would come from the Google Drive API
-    // setFile(...) would happen after selection
-  };
+  const handleGoogleDriveSelect = async () => {
+    try {
+      const accessToken = await getAccessToken();
 
-  // Toggle extraction settings panel
-  const toggleSettings = () => {
-    setShowSettings(!showSettings);
+      openPicker({
+        clientId: import.meta.env.VITE_GDRIVE_CLIENT_ID,
+        developerKey: import.meta.env.VITE_GDRIVE_API_KEY,
+        token: accessToken, // ✅ required for download
+        viewId: "PDFS",
+        showUploadView: true,
+        showUploadFolders: true,
+        supportDrives: true,
+        multiselect: false,
+        callbackFunction: async (data) => {
+          if (data.action !== "picked") return;
+          const doc = data.docs[0];
+          console.log("Picked doc:", doc);
+
+          try {
+            const res = await fetch(
+              `https://www.googleapis.com/drive/v3/files/${doc.id}?alt=media`,
+              {
+                headers: {
+                  Authorization: `Bearer ${accessToken}`, // ✅ auth for download
+                },
+              }
+            );
+
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+            const blob = await res.blob();
+            const file = new File([blob], doc.name, { type: doc.mimeType });
+            setFile(file);
+            setFilePreview(URL.createObjectURL(blob));
+            setError(null);
+          } catch (err) {
+            console.error("Download failed:", err);
+            setError("Couldn’t download the selected Drive file.");
+          }
+        },
+      });
+    } catch (err) {
+      console.error("Google Auth Error:", err);
+      setError("Google Drive authentication failed.");
+    }
   };
 
   // Validate page numbers
@@ -95,6 +155,14 @@ export default function ExtractPDF() {
       setError("End page must be greater than or equal to start page.");
       return false;
     }
+    if (totalPages && startPage > totalPages) {
+      setError(`Start page cannot exceed total pages (${totalPages}).`);
+      return false;
+    }
+    if (totalPages && endPage > totalPages) {
+      setError(`End page cannot exceed total pages (${totalPages}).`);
+      return false;
+    }
     if (startPage > 1000 || endPage > 1000) {
       setError("Page numbers cannot exceed 1000.");
       return false;
@@ -102,10 +170,49 @@ export default function ExtractPDF() {
     return true;
   };
 
+  const startWebSocketListener = (taskId) => {
+    // close any previous socket
+    if (socketRef.current) socketRef.current.close();
+
+    const socket = new WebSocket(`ws://localhost:8080/ws/progress/${taskId}`);
+    socketRef.current = socket; // save for later cleanup
+
+    socket.onopen = () => {
+      console.log("WS open");
+    };
+
+    socket.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+
+      if (data.progress !== undefined) setProgress(+data.progress);
+
+      if (data.status === "completed") {
+        setResultUrl(data.result_url);
+        setProcessingStatus("completed");
+        socket.close();
+      } else if (data.status === "failed") {
+        setError(data.error || "Conversion failed.");
+        setProcessingStatus("error");
+        socket.close();
+      } else if (["queued", "processing"].includes(data.status)) {
+        setProcessingStatus("processing");
+      }
+    };
+
+    socket.onerror = (err) => {
+      console.warn("WS error:", err);
+      setError("WebSocket connection failed.");
+      setProcessingStatus("error");
+      socket.close();
+    };
+
+    socket.onclose = () => console.log("WS closed");
+  };
+
   // Upload and process the PDF
   const handleUpload = async () => {
     if (!file) return;
-    
+
     if (!validatePageNumbers()) return;
 
     setIsUploading(true);
@@ -116,37 +223,12 @@ export default function ExtractPDF() {
       const { task_id } = await extractPDF(file, startPage, endPage);
       setTaskId(task_id);
       setProcessingStatus("processing");
-      startProgressPolling(task_id);
+      startWebSocketListener(task_id);
     } catch (err) {
       setError("Failed to upload PDF. Please try again.");
       setProcessingStatus("error");
       setIsUploading(false);
     }
-  };
-
-  // Poll for task progress
-  const startProgressPolling = (taskId) => {
-    if (progressInterval.current) {
-      clearInterval(progressInterval.current);
-    }
-
-    progressInterval.current = setInterval(async () => {
-      try {
-        const { progress, result_url } = await fetchProgress(taskId);
-
-        setProgress(progress);
-
-        if (progress >= 100) {
-          clearInterval(progressInterval.current);
-          setProcessingStatus("completed");
-          if (result_url) setResultUrl(result_url);
-        }
-      } catch (err) {
-        clearInterval(progressInterval.current);
-        setError("Failed to fetch progress.");
-        setProcessingStatus("error");
-      }
-    }, 1000);
   };
 
   // Download extracted PDF
@@ -161,10 +243,13 @@ export default function ExtractPDF() {
       link.href = url;
 
       // Create filename with page range
-      const baseFilename = file.name.replace(/\.pdf$/i, '');
-      const pageRange = startPage === endPage ? `page_${startPage}` : `pages_${startPage}-${endPage}`;
+      const baseFilename = file.name.replace(/\.pdf$/i, "");
+      const pageRange =
+        startPage === endPage
+          ? `page_${startPage}`
+          : `pages_${startPage}-${endPage}`;
       link.download = `${baseFilename}_${pageRange}.pdf`;
-      
+
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -179,8 +264,10 @@ export default function ExtractPDF() {
     if (progressInterval.current) {
       clearInterval(progressInterval.current);
     }
-    
+
     setFile(null);
+    setTotalPages(null);
+    setIsLoadingPageCount(false);
     setTaskId(null);
     setProgress(0);
     setProcessingStatus(null);
@@ -189,7 +276,7 @@ export default function ExtractPDF() {
     setIsUploading(false);
     setStartPage(1);
     setEndPage(1);
-    
+
     // Reset file input
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -199,9 +286,8 @@ export default function ExtractPDF() {
   // Clean up interval on component unmount
   useEffect(() => {
     return () => {
-      if (progressInterval.current) {
-        clearInterval(progressInterval.current);
-      }
+      if (socketRef.current) socketRef.current.close();
+      if (progressInterval.current) clearInterval(progressInterval.current);
     };
   }, []);
 
@@ -213,10 +299,13 @@ export default function ExtractPDF() {
         transition={{ duration: 0.5 }}
         className="text-center mb-8"
       >
-        <h1 className="text-3xl font-bold text-gray-800 mb-4">PDF Page Extraction</h1>
+        <h1 className="text-3xl font-bold text-gray-800 mb-4">
+          PDF Page Extraction
+        </h1>
         <p className="text-gray-600 max-w-2xl mx-auto">
-          Extract specific pages from your PDF documents. Perfect for creating smaller documents, 
-          sharing specific sections, or organizing content from larger files.
+          Extract specific pages from your PDF documents. Perfect for creating
+          smaller documents, sharing specific sections, or organizing content
+          from larger files.
         </p>
       </motion.div>
 
@@ -224,7 +313,9 @@ export default function ExtractPDF() {
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
         {/* File Upload Section */}
         <div className="p-6 border-b border-gray-100">
-          <h2 className="text-lg font-semibold text-gray-800 mb-4">Upload PDF</h2>
+          <h2 className="text-lg font-semibold text-gray-800 mb-4">
+            Upload PDF
+          </h2>
 
           {!file ? (
             <motion.div
@@ -276,9 +367,7 @@ export default function ExtractPDF() {
               </motion.button>
 
               {error && (
-                <div className="mt-4 text-sm text-red-600">
-                  {error}
-                </div>
+                <div className="mt-4 text-sm text-red-600">{error}</div>
               )}
             </motion.div>
           ) : (
@@ -305,9 +394,19 @@ export default function ExtractPDF() {
                       </p>
                       <p className="text-sm text-gray-500 mt-1">
                         {formatFileSize(file.size)}
+                        {isLoadingPageCount ? (
+                          <span className="ml-2 text-blue-600">
+                            <Loader2 className="h-3 w-3 animate-spin inline mr-1" />
+                            Counting pages...
+                          </span>
+                        ) : totalPages ? (
+                          <span className="ml-2">
+                            • {totalPages} page{totalPages !== 1 ? "s" : ""}
+                          </span>
+                        ) : null}
                       </p>
                     </div>
-                    <button 
+                    <button
                       onClick={handleReset}
                       className="p-1.5 rounded-full bg-gray-200 hover:bg-gray-300 text-gray-500"
                     >
@@ -318,57 +417,92 @@ export default function ExtractPDF() {
 
                 {!processingStatus ? (
                   <div className="space-y-4">
-                    {/* Page Range Settings Button */}
-                    <div className="flex justify-end">
-                      <button 
-                        onClick={toggleSettings}
-                        className="flex items-center text-sm text-gray-600 hover:text-gray-900"
-                      >
-                        <Settings className="h-4 w-4 mr-1" />
-                        Page Range Settings
-                      </button>
+                    {/* Page Range Settings - Always Visible */}
+                    <div className="bg-gray-50 rounded-lg p-4 mb-4">
+                      <h4 className="text-sm font-medium text-gray-700 mb-3">
+                        Page Range to Extract
+                      </h4>
+                      {isLoadingPageCount ? (
+                        <div className="flex items-center justify-center py-4">
+                          <Loader2 className="h-5 w-5 animate-spin text-blue-600 mr-2" />
+                          <span className="text-sm text-gray-600">
+                            Analyzing PDF structure...
+                          </span>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex items-center space-x-4">
+                            <div className="flex items-center space-x-2">
+                              <label className="text-sm text-gray-600">
+                                From:
+                              </label>
+                              <input
+                                type="number"
+                                min="1"
+                                max={totalPages || 1000}
+                                value={startPage}
+                                onChange={(e) => {
+                                  const value = parseInt(e.target.value) || 1;
+                                  const clampedValue = Math.max(
+                                    1,
+                                    Math.min(value, totalPages || 1000)
+                                  );
+                                  setStartPage(clampedValue);
+                                  // Auto-adjust end page if it's less than start page
+                                  if (endPage < clampedValue) {
+                                    setEndPage(clampedValue);
+                                  }
+                                }}
+                                className="w-20 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:border-blue-500"
+                              />
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <label className="text-sm text-gray-600">
+                                To:
+                              </label>
+                              <input
+                                type="number"
+                                min={startPage}
+                                max={totalPages || 1000}
+                                value={endPage}
+                                onChange={(e) => {
+                                  const value =
+                                    parseInt(e.target.value) || startPage;
+                                  const clampedValue = Math.max(
+                                    startPage,
+                                    Math.min(value, totalPages || 1000)
+                                  );
+                                  setEndPage(clampedValue);
+                                }}
+                                className="w-20 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:border-blue-500"
+                              />
+                            </div>
+                            {totalPages && (
+                              <div className="text-sm text-gray-500">
+                                / {totalPages} pages
+                              </div>
+                            )}
+                          </div>
+                          <div className="mt-3 flex items-start">
+                            <Info className="h-4 w-4 text-gray-400 mr-1 flex-shrink-0 mt-0.5" />
+                            <p className="text-xs text-gray-500">
+                              {startPage === endPage
+                                ? `Extracting page ${startPage} only.`
+                                : `Extracting pages ${startPage} to ${endPage} (${
+                                    endPage - startPage + 1
+                                  } pages total).`}
+                              {totalPages && (
+                                <span className="ml-2">
+                                  Document has {totalPages} page
+                                  {totalPages !== 1 ? "s" : ""} total.
+                                </span>
+                              )}
+                            </p>
+                          </div>
+                        </>
+                      )}
                     </div>
-                    
-                    {/* Settings Panel */}
-                    {showSettings && (
-                      <div className="bg-gray-50 rounded-lg p-4 mb-4">
-                        <h4 className="text-sm font-medium text-gray-700 mb-3">Page Range to Extract</h4>
-                        <div className="flex items-center space-x-4">
-                          <div className="flex items-center space-x-2">
-                            <label className="text-sm text-gray-600">From:</label>
-                            <input
-                              type="number"
-                              min="1"
-                              max="1000"
-                              value={startPage}
-                              onChange={(e) => setStartPage(parseInt(e.target.value) || 1)}
-                              className="w-20 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:border-blue-500"
-                            />
-                          </div>
-                          <div className="flex items-center space-x-2">
-                            <label className="text-sm text-gray-600">To:</label>
-                            <input
-                              type="number"
-                              min={startPage}
-                              max="1000"
-                              value={endPage}
-                              onChange={(e) => setEndPage(parseInt(e.target.value) || startPage)}
-                              className="w-20 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:border-blue-500"
-                            />
-                          </div>
-                        </div>
-                        <div className="mt-3 flex items-start">
-                          <Info className="h-4 w-4 text-gray-400 mr-1 flex-shrink-0 mt-0.5" />
-                          <p className="text-xs text-gray-500">
-                            {startPage === endPage 
-                              ? `Extracting page ${startPage} only.`
-                              : `Extracting pages ${startPage} to ${endPage} (${endPage - startPage + 1} pages total).`
-                            }
-                          </p>
-                        </div>
-                      </div>
-                    )}
-                    
+
                     {/* Action Buttons */}
                     <div className="flex space-x-3">
                       <motion.button
@@ -401,16 +535,18 @@ export default function ExtractPDF() {
                         transition={{ duration: 0.5 }}
                       ></motion.div>
                     </div>
-                    
+
                     {/* Status Text */}
                     <div className="flex items-center">
                       {processingStatus === "uploading" && (
                         <>
                           <Loader2 className="animate-spin mr-2 h-4 w-4 text-blue-600" />
-                          <span className="text-sm text-gray-700">Uploading PDF...</span>
+                          <span className="text-sm text-gray-700">
+                            Uploading PDF...
+                          </span>
                         </>
                       )}
-                      
+
                       {processingStatus === "processing" && (
                         <>
                           <Loader2 className="animate-spin mr-2 h-4 w-4 text-blue-600" />
@@ -419,14 +555,16 @@ export default function ExtractPDF() {
                           </span>
                         </>
                       )}
-                      
+
                       {processingStatus === "completed" && (
                         <>
                           <Check className="mr-2 h-4 w-4 text-green-600" />
-                          <span className="text-sm text-gray-700">Extraction completed!</span>
+                          <span className="text-sm text-gray-700">
+                            Extraction completed!
+                          </span>
                         </>
                       )}
-                      
+
                       {processingStatus === "error" && (
                         <>
                           <X className="mr-2 h-4 w-4 text-red-600" />
@@ -434,7 +572,7 @@ export default function ExtractPDF() {
                         </>
                       )}
                     </div>
-                    
+
                     {/* Result Actions */}
                     {processingStatus === "completed" && resultUrl && (
                       <div className="flex space-x-3 mt-4">
@@ -468,24 +606,35 @@ export default function ExtractPDF() {
 
         {/* Information Section */}
         <div className="p-6 bg-gray-50">
-          <h3 className="text-lg font-semibold text-gray-800 mb-3">Why Extract PDF Pages?</h3>
+          <h3 className="text-lg font-semibold text-gray-800 mb-3">
+            Why Extract PDF Pages?
+          </h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="bg-white p-4 rounded-lg shadow-sm">
-              <h4 className="font-semibold text-blue-600 mb-2">Share Specific Content</h4>
+              <h4 className="font-semibold text-blue-600 mb-2">
+                Share Specific Content
+              </h4>
               <p className="text-sm text-gray-600">
-                Extract and share only the relevant pages instead of sending entire documents.
+                Extract and share only the relevant pages instead of sending
+                entire documents.
               </p>
             </div>
             <div className="bg-white p-4 rounded-lg shadow-sm">
-              <h4 className="font-semibold text-blue-600 mb-2">Organize Documents</h4>
+              <h4 className="font-semibold text-blue-600 mb-2">
+                Organize Documents
+              </h4>
               <p className="text-sm text-gray-600">
-                Split large PDFs into smaller, more manageable files for better organization.
+                Split large PDFs into smaller, more manageable files for better
+                organization.
               </p>
             </div>
             <div className="bg-white p-4 rounded-lg shadow-sm">
-              <h4 className="font-semibold text-blue-600 mb-2">Reduce File Size</h4>
+              <h4 className="font-semibold text-blue-600 mb-2">
+                Reduce File Size
+              </h4>
               <p className="text-sm text-gray-600">
-                Create lighter files by extracting only the pages you need for faster sharing.
+                Create lighter files by extracting only the pages you need for
+                faster sharing.
               </p>
             </div>
           </div>
@@ -508,9 +657,12 @@ export default function ExtractPDF() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Precise page selection</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Precise page selection
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Extract single pages or continuous page ranges with exact precision.
+                Extract single pages or continuous page ranges with exact
+                precision.
               </p>
             </div>
           </div>
@@ -519,9 +671,12 @@ export default function ExtractPDF() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Maintains original quality</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Maintains original quality
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Extracted pages retain all formatting, images, and text quality from the original.
+                Extracted pages retain all formatting, images, and text quality
+                from the original.
               </p>
             </div>
           </div>
@@ -530,9 +685,12 @@ export default function ExtractPDF() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Preserves interactivity</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Preserves interactivity
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Links, bookmarks, and form fields are preserved in extracted pages.
+                Links, bookmarks, and form fields are preserved in extracted
+                pages.
               </p>
             </div>
           </div>
@@ -541,9 +699,12 @@ export default function ExtractPDF() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Flexible range selection</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Flexible range selection
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Extract single pages, continuous ranges, or multiple non-consecutive sections.
+                Extract single pages, continuous ranges, or multiple
+                non-consecutive sections.
               </p>
             </div>
           </div>

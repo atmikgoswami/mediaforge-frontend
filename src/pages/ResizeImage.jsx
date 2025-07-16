@@ -1,15 +1,16 @@
 import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { resizeImage } from "../services/http/image";
-import { fetchProgress } from "../services/http/common";
-import { 
-  Upload, 
-  ArrowDownToLine, 
-  Image as ImageIcon, 
-  X, 
-  Check, 
-  Loader2, 
-  Download, 
+import useDrivePicker from "react-google-drive-picker";
+import { getAccessToken } from "../utils/googleDrive";
+import {
+  Upload,
+  ArrowDownToLine,
+  Image as ImageIcon,
+  X,
+  Check,
+  Loader2,
+  Download,
   RefreshCw,
   CloudUpload,
   Maximize2,
@@ -17,7 +18,7 @@ import {
   Unlock,
   Monitor,
   Smartphone,
-  Tablet
+  Tablet,
 } from "lucide-react";
 
 export default function ResizeImage() {
@@ -26,13 +27,14 @@ export default function ResizeImage() {
   const [filePreview, setFilePreview] = useState(null);
   const [originalDimensions, setOriginalDimensions] = useState(null);
   const fileInputRef = useRef(null);
-  
+
   // Resize settings
   const [width, setWidth] = useState("");
   const [height, setHeight] = useState("");
   const [maintainAspectRatio, setMaintainAspectRatio] = useState(true);
   const [aspectRatio, setAspectRatio] = useState(null);
-  
+  const [openPicker] = useDrivePicker();
+
   // Processing states
   const [isUploading, setIsUploading] = useState(false);
   const [taskId, setTaskId] = useState(null);
@@ -40,6 +42,7 @@ export default function ResizeImage() {
   const [processingStatus, setProcessingStatus] = useState(null); // 'uploading', 'processing', 'completed', 'error'
   const [resultUrl, setResultUrl] = useState(null);
   const [error, setError] = useState(null);
+  const socketRef = useRef(null);
 
   // Progress polling
   const progressInterval = useRef(null);
@@ -47,13 +50,33 @@ export default function ResizeImage() {
   // Common preset sizes
   const presetSizes = [
     { name: "HD (1920×1080)", width: 1920, height: 1080, icon: Monitor },
-    { name: "Instagram Square (1080×1080)", width: 1080, height: 1080, icon: Smartphone },
-    { name: "Facebook Cover (820×312)", width: 820, height: 312, icon: Monitor },
-    { name: "Twitter Header (1500×500)", width: 1500, height: 500, icon: Monitor },
-    { name: "YouTube Thumbnail (1280×720)", width: 1280, height: 720, icon: Monitor },
+    {
+      name: "Instagram Square (1080×1080)",
+      width: 1080,
+      height: 1080,
+      icon: Smartphone,
+    },
+    {
+      name: "Facebook Cover (820×312)",
+      width: 820,
+      height: 312,
+      icon: Monitor,
+    },
+    {
+      name: "Twitter Header (1500×500)",
+      width: 1500,
+      height: 500,
+      icon: Monitor,
+    },
+    {
+      name: "YouTube Thumbnail (1280×720)",
+      width: 1280,
+      height: 720,
+      icon: Monitor,
+    },
     { name: "iPad (1024×768)", width: 1024, height: 768, icon: Tablet },
     { name: "iPhone (375×667)", width: 375, height: 667, icon: Smartphone },
-    { name: "Web Banner (728×90)", width: 728, height: 90, icon: Monitor }
+    { name: "Web Banner (728×90)", width: 728, height: 90, icon: Monitor },
   ];
 
   // File size conversion
@@ -67,7 +90,7 @@ export default function ResizeImage() {
 
   // Calculate aspect ratio
   const calculateAspectRatio = (w, h) => {
-    const gcd = (a, b) => b === 0 ? a : gcd(b, a % b);
+    const gcd = (a, b) => (b === 0 ? a : gcd(b, a % b));
     const divisor = gcd(w, h);
     return { width: w / divisor, height: h / divisor };
   };
@@ -75,23 +98,23 @@ export default function ResizeImage() {
   // Handle file selection
   const handleFileChange = (event) => {
     const selectedFile = event.target.files[0];
-    
+
     if (!selectedFile) return;
-    
+
     // Check file size (10MB max)
     if (selectedFile.size > 10 * 1024 * 1024) {
       setError("File size exceeds 10MB limit.");
       return;
     }
-    
+
     setError(null);
     setFile(selectedFile);
-    
+
     // Create preview URL and get dimensions
     const fileReader = new FileReader();
     fileReader.onload = () => {
       setFilePreview(fileReader.result);
-      
+
       // Get image dimensions
       const img = new Image();
       img.onload = () => {
@@ -99,7 +122,7 @@ export default function ResizeImage() {
         setOriginalDimensions(dimensions);
         setWidth(img.width.toString());
         setHeight(img.height.toString());
-        
+
         // Calculate and store aspect ratio
         const ratio = calculateAspectRatio(img.width, img.height);
         setAspectRatio(ratio);
@@ -110,22 +133,61 @@ export default function ResizeImage() {
   };
 
   // Handle Google Drive selection
-  const handleGoogleDriveSelect = () => {
-    // This would typically integrate with Google Drive Picker API
-    // For this example, we'll just show a message
-    alert("Google Drive integration would open a picker here");
-    
-    // Simulating a file selection for demonstration
-    // In a real implementation, this would come from the Google Drive API
-    // setFile(...) and setFilePreview(...) would happen after selection
+  const handleGoogleDriveSelect = async () => {
+    try {
+      const accessToken = await getAccessToken();
+
+      openPicker({
+        clientId: import.meta.env.VITE_GDRIVE_CLIENT_ID,
+        developerKey: import.meta.env.VITE_GDRIVE_API_KEY,
+        token: accessToken, // ✅ required for download
+        viewId: "DOCS_IMAGES",
+        showUploadView: true,
+        showUploadFolders: true,
+        supportDrives: true,
+        multiselect: false,
+        callbackFunction: async (data) => {
+          if (data.action !== "picked") return;
+          const doc = data.docs[0];
+          console.log("Picked doc:", doc);
+
+          try {
+            const res = await fetch(
+              `https://www.googleapis.com/drive/v3/files/${doc.id}?alt=media`,
+              {
+                headers: {
+                  Authorization: `Bearer ${accessToken}`, // ✅ auth for download
+                },
+              }
+            );
+
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+            const blob = await res.blob();
+            const file = new File([blob], doc.name, { type: doc.mimeType });
+            setFile(file);
+            setFilePreview(URL.createObjectURL(blob));
+            setError(null);
+          } catch (err) {
+            console.error("Download failed:", err);
+            setError("Couldn’t download the selected Drive file.");
+          }
+        },
+      });
+    } catch (err) {
+      console.error("Google Auth Error:", err);
+      setError("Google Drive authentication failed.");
+    }
   };
 
   // Handle width change
   const handleWidthChange = (value) => {
     setWidth(value);
-    
+
     if (maintainAspectRatio && aspectRatio && value && !isNaN(value)) {
-      const newHeight = Math.round((parseInt(value) * aspectRatio.height) / aspectRatio.width);
+      const newHeight = Math.round(
+        (parseInt(value) * aspectRatio.height) / aspectRatio.width
+      );
       setHeight(newHeight.toString());
     }
   };
@@ -133,9 +195,11 @@ export default function ResizeImage() {
   // Handle height change
   const handleHeightChange = (value) => {
     setHeight(value);
-    
+
     if (maintainAspectRatio && aspectRatio && value && !isNaN(value)) {
-      const newWidth = Math.round((parseInt(value) * aspectRatio.width) / aspectRatio.height);
+      const newWidth = Math.round(
+        (parseInt(value) * aspectRatio.width) / aspectRatio.height
+      );
       setWidth(newWidth.toString());
     }
   };
@@ -159,14 +223,58 @@ export default function ResizeImage() {
     }
   };
 
+  const startWebSocketListener = (taskId) => {
+    // close any previous socket
+    if (socketRef.current) socketRef.current.close();
+
+    const socket = new WebSocket(`ws://localhost:8080/ws/progress/${taskId}`);
+    socketRef.current = socket; // save for later cleanup
+
+    socket.onopen = () => {
+      console.log("WS open");
+    };
+
+    socket.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+
+      if (data.progress !== undefined) setProgress(+data.progress);
+
+      if (data.status === "completed") {
+        setResultUrl(data.result_url);
+        setProcessingStatus("completed");
+        socket.close();
+      } else if (data.status === "failed") {
+        setError(data.error || "Conversion failed.");
+        setProcessingStatus("error");
+        socket.close();
+      } else if (["queued", "processing"].includes(data.status)) {
+        setProcessingStatus("processing");
+      }
+    };
+
+    socket.onerror = (err) => {
+      console.warn("WS error:", err);
+      setError("WebSocket connection failed.");
+      setProcessingStatus("error");
+      socket.close();
+    };
+
+    socket.onclose = () => console.log("WS closed");
+  };
+
   // Upload and resize the image
   const handleResize = async () => {
     if (!file || !width || !height) return;
 
     const widthNum = parseInt(width);
     const heightNum = parseInt(height);
-    
-    if (isNaN(widthNum) || isNaN(heightNum) || widthNum <= 0 || heightNum <= 0) {
+
+    if (
+      isNaN(widthNum) ||
+      isNaN(heightNum) ||
+      widthNum <= 0 ||
+      heightNum <= 0
+    ) {
       setError("Please enter valid width and height values.");
       return;
     }
@@ -180,43 +288,18 @@ export default function ResizeImage() {
       const resizeOptions = {
         width: widthNum,
         height: heightNum,
-        maintainAspectRatio: maintainAspectRatio
+        maintainAspectRatio: maintainAspectRatio,
       };
-      
+
       const { task_id } = await resizeImage(file, resizeOptions);
       setTaskId(task_id);
       setProcessingStatus("processing");
-      startProgressPolling(task_id);
+      startWebSocketListener(task_id);
     } catch (err) {
       setError("Failed to upload image. Please try again.");
       setProcessingStatus("error");
       setIsUploading(false);
     }
-  };
-
-  // Poll for task progress
-  const startProgressPolling = (taskId) => {
-    if (progressInterval.current) {
-      clearInterval(progressInterval.current);
-    }
-
-    progressInterval.current = setInterval(async () => {
-      try {
-        const { progress, result_url } = await fetchProgress(taskId);
-
-        setProgress(progress);
-
-        if (progress >= 100) {
-          clearInterval(progressInterval.current);
-          setProcessingStatus("completed");
-          if (result_url) setResultUrl(result_url);
-        }
-      } catch (err) {
-        clearInterval(progressInterval.current);
-        setError("Failed to fetch progress.");
-        setProcessingStatus("error");
-      }
-    }, 1000);
   };
 
   // Download resized image
@@ -231,8 +314,8 @@ export default function ResizeImage() {
       link.href = url;
 
       // Generate filename with dimensions
-      const originalName = file.name.split('.').slice(0, -1).join('.');
-      const extension = file.name.split('.').pop();
+      const originalName = file.name.split(".").slice(0, -1).join(".");
+      const extension = file.name.split(".").pop();
       link.download = `${originalName}_${width}x${height}.${extension}`;
       document.body.appendChild(link);
       link.click();
@@ -248,7 +331,7 @@ export default function ResizeImage() {
     if (progressInterval.current) {
       clearInterval(progressInterval.current);
     }
-    
+
     setFile(null);
     setFilePreview(null);
     setOriginalDimensions(null);
@@ -262,7 +345,7 @@ export default function ResizeImage() {
     setResultUrl(null);
     setError(null);
     setIsUploading(false);
-    
+
     // Reset file input
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -272,13 +355,18 @@ export default function ResizeImage() {
   // Clean up interval on component unmount
   useEffect(() => {
     return () => {
-      if (progressInterval.current) {
-        clearInterval(progressInterval.current);
-      }
+      if (socketRef.current) socketRef.current.close();
+      if (progressInterval.current) clearInterval(progressInterval.current);
     };
   }, []);
 
-  const isValidDimensions = width && height && !isNaN(parseInt(width)) && !isNaN(parseInt(height)) && parseInt(width) > 0 && parseInt(height) > 0;
+  const isValidDimensions =
+    width &&
+    height &&
+    !isNaN(parseInt(width)) &&
+    !isNaN(parseInt(height)) &&
+    parseInt(width) > 0 &&
+    parseInt(height) > 0;
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -288,10 +376,13 @@ export default function ResizeImage() {
         transition={{ duration: 0.5 }}
         className="text-center mb-8"
       >
-        <h1 className="text-3xl font-bold text-gray-800 mb-4">Image Resizing</h1>
+        <h1 className="text-3xl font-bold text-gray-800 mb-4">
+          Image Resizing
+        </h1>
         <p className="text-gray-600 max-w-2xl mx-auto">
-          Resize your images to specific dimensions or choose from popular preset sizes. 
-          Perfect for social media, web optimization, or meeting specific requirements.
+          Resize your images to specific dimensions or choose from popular
+          preset sizes. Perfect for social media, web optimization, or meeting
+          specific requirements.
         </p>
       </motion.div>
 
@@ -299,7 +390,9 @@ export default function ResizeImage() {
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
         {/* File Upload Section */}
         <div className="p-6 border-b border-gray-100">
-          <h2 className="text-lg font-semibold text-gray-800 mb-4">Upload Image</h2>
+          <h2 className="text-lg font-semibold text-gray-800 mb-4">
+            Upload Image
+          </h2>
 
           {!file ? (
             <motion.div
@@ -351,9 +444,7 @@ export default function ResizeImage() {
               </motion.button>
 
               {error && (
-                <div className="mt-4 text-sm text-red-600">
-                  {error}
-                </div>
+                <div className="mt-4 text-sm text-red-600">{error}</div>
               )}
             </motion.div>
           ) : (
@@ -364,10 +455,10 @@ export default function ResizeImage() {
                 <div className="w-full md:w-1/3 relative">
                   <div className="aspect-square bg-gray-100 rounded-lg overflow-hidden flex items-center justify-center">
                     {filePreview ? (
-                      <img 
-                        src={filePreview} 
-                        alt="Preview" 
-                        className="max-h-full max-w-full object-contain" 
+                      <img
+                        src={filePreview}
+                        alt="Preview"
+                        className="max-h-full max-w-full object-contain"
                       />
                     ) : (
                       <ImageIcon className="h-12 w-12 text-gray-400" />
@@ -386,16 +477,21 @@ export default function ResizeImage() {
                         <p className="text-sm text-gray-500 mt-1">
                           {formatFileSize(file.size)}
                           {originalDimensions && (
-                            <span> • {originalDimensions.width} × {originalDimensions.height} px</span>
+                            <span>
+                              {" "}
+                              • {originalDimensions.width} ×{" "}
+                              {originalDimensions.height} px
+                            </span>
                           )}
                         </p>
                         {aspectRatio && (
                           <p className="text-xs text-gray-400 mt-1">
-                            Aspect ratio: {aspectRatio.width}:{aspectRatio.height}
+                            Aspect ratio: {aspectRatio.width}:
+                            {aspectRatio.height}
                           </p>
                         )}
                       </div>
-                      <button 
+                      <button
                         onClick={handleReset}
                         className="p-1.5 rounded-full bg-gray-200 hover:bg-gray-300 text-gray-500"
                       >
@@ -408,7 +504,9 @@ export default function ResizeImage() {
 
               {/* Preset Sizes */}
               <div>
-                <h3 className="text-sm font-medium text-gray-700 mb-3">Popular Sizes</h3>
+                <h3 className="text-sm font-medium text-gray-700 mb-3">
+                  Popular Sizes
+                </h3>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                   {presetSizes.map((preset) => {
                     const IconComponent = preset.icon;
@@ -420,8 +518,12 @@ export default function ResizeImage() {
                       >
                         <IconComponent className="h-3 w-3 mr-2 flex-shrink-0" />
                         <div>
-                          <div className="font-medium">{preset.width}×{preset.height}</div>
-                          <div className="text-gray-500 truncate">{preset.name.split('(')[0].trim()}</div>
+                          <div className="font-medium">
+                            {preset.width}×{preset.height}
+                          </div>
+                          <div className="text-gray-500 truncate">
+                            {preset.name.split("(")[0].trim()}
+                          </div>
                         </div>
                       </button>
                     );
@@ -432,7 +534,9 @@ export default function ResizeImage() {
               {/* Dimension Controls */}
               <div className="bg-gray-50 rounded-lg p-4">
                 <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-sm font-medium text-gray-700">Custom Dimensions</h3>
+                  <h3 className="text-sm font-medium text-gray-700">
+                    Custom Dimensions
+                  </h3>
                   <div className="flex items-center space-x-3">
                     <button
                       onClick={resetToOriginal}
@@ -444,11 +548,15 @@ export default function ResizeImage() {
                       onClick={toggleAspectRatio}
                       className={`flex items-center space-x-1 px-2 py-1 rounded text-xs transition-colors ${
                         maintainAspectRatio
-                          ? 'bg-green-100 text-green-700'
-                          : 'bg-gray-200 text-gray-600'
+                          ? "bg-green-100 text-green-700"
+                          : "bg-gray-200 text-gray-600"
                       }`}
                     >
-                      {maintainAspectRatio ? <Lock size={12} /> : <Unlock size={12} />}
+                      {maintainAspectRatio ? (
+                        <Lock size={12} />
+                      ) : (
+                        <Unlock size={12} />
+                      )}
                       <span>Lock Ratio</span>
                     </button>
                   </div>
@@ -485,10 +593,18 @@ export default function ResizeImage() {
 
                 {isValidDimensions && (
                   <div className="mt-3 text-xs text-gray-500">
-                    New size will be: {parseInt(width)} × {parseInt(height)} pixels
+                    New size will be: {parseInt(width)} × {parseInt(height)}{" "}
+                    pixels
                     {originalDimensions && (
                       <span className="ml-2">
-                        ({Math.round((parseInt(width) * parseInt(height)) / (originalDimensions.width * originalDimensions.height) * 100)}% of original)
+                        (
+                        {Math.round(
+                          ((parseInt(width) * parseInt(height)) /
+                            (originalDimensions.width *
+                              originalDimensions.height)) *
+                            100
+                        )}
+                        % of original)
                       </span>
                     )}
                   </div>
@@ -505,8 +621,8 @@ export default function ResizeImage() {
                     disabled={!isValidDimensions}
                     className={`flex-1 py-2 px-4 rounded-md flex items-center justify-center transition-colors ${
                       isValidDimensions
-                        ? 'bg-green-600 text-white hover:bg-green-700'
-                        : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                        ? "bg-green-600 text-white hover:bg-green-700"
+                        : "bg-gray-300 text-gray-500 cursor-not-allowed"
                     }`}
                   >
                     <Maximize2 className="mr-2 h-4 w-4" />
@@ -532,25 +648,28 @@ export default function ResizeImage() {
                       transition={{ duration: 0.5 }}
                     ></motion.div>
                   </div>
-                  
+
                   {/* Status Text */}
                   <div className="flex items-center">
                     {processingStatus === "uploading" && (
                       <>
                         <Loader2 className="animate-spin mr-2 h-4 w-4 text-green-600" />
-                        <span className="text-sm text-gray-700">Uploading image...</span>
+                        <span className="text-sm text-gray-700">
+                          Uploading image...
+                        </span>
                       </>
                     )}
-                    
+
                     {processingStatus === "processing" && (
                       <>
                         <Loader2 className="animate-spin mr-2 h-4 w-4 text-green-600" />
                         <span className="text-sm text-gray-700">
-                          Resizing to {width} × {height} pixels... {Math.round(progress)}%
+                          Resizing to {width} × {height} pixels...{" "}
+                          {Math.round(progress)}%
                         </span>
                       </>
                     )}
-                    
+
                     {processingStatus === "completed" && (
                       <>
                         <Check className="mr-2 h-4 w-4 text-green-600" />
@@ -559,7 +678,7 @@ export default function ResizeImage() {
                         </span>
                       </>
                     )}
-                    
+
                     {processingStatus === "error" && (
                       <>
                         <X className="mr-2 h-4 w-4 text-red-600" />
@@ -567,7 +686,7 @@ export default function ResizeImage() {
                       </>
                     )}
                   </div>
-                  
+
                   {/* Result Actions */}
                   {processingStatus === "completed" && resultUrl && (
                     <div className="flex space-x-3 mt-4">
@@ -605,24 +724,35 @@ export default function ResizeImage() {
 
         {/* Information Section */}
         <div className="p-6 bg-gray-50">
-          <h3 className="text-lg font-semibold text-gray-800 mb-3">Resizing Tips</h3>
+          <h3 className="text-lg font-semibold text-gray-800 mb-3">
+            Resizing Tips
+          </h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="bg-white p-4 rounded-lg shadow-sm">
-              <h4 className="font-semibold text-green-600 mb-2">Aspect Ratio Lock</h4>
+              <h4 className="font-semibold text-green-600 mb-2">
+                Aspect Ratio Lock
+              </h4>
               <p className="text-sm text-gray-600">
-                Keep proportions intact to prevent distortion. Unlock for custom ratios.
+                Keep proportions intact to prevent distortion. Unlock for custom
+                ratios.
               </p>
             </div>
             <div className="bg-white p-4 rounded-lg shadow-sm">
-              <h4 className="font-semibold text-green-600 mb-2">Quality Preservation</h4>
+              <h4 className="font-semibold text-green-600 mb-2">
+                Quality Preservation
+              </h4>
               <p className="text-sm text-gray-600">
-                Smart algorithms maintain quality when resizing, especially for upscaling.
+                Smart algorithms maintain quality when resizing, especially for
+                upscaling.
               </p>
             </div>
             <div className="bg-white p-4 rounded-lg shadow-sm">
-              <h4 className="font-semibold text-green-600 mb-2">Popular Presets</h4>
+              <h4 className="font-semibold text-green-600 mb-2">
+                Popular Presets
+              </h4>
               <p className="text-sm text-gray-600">
-                Quick access to common sizes for social media, devices, and web use.
+                Quick access to common sizes for social media, devices, and web
+                use.
               </p>
             </div>
           </div>
@@ -645,9 +775,12 @@ export default function ResizeImage() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Smart upscaling</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Quality Preservation
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                AI-powered algorithms enhance image quality when enlarging images.
+                Maintain image quality with advanced algorithms during resizing,
+                especially for upscaling.
               </p>
             </div>
           </div>
@@ -656,9 +789,12 @@ export default function ResizeImage() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Aspect ratio protection</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Aspect ratio protection
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Automatically maintain proportions or unlock for creative freedom.
+                Automatically maintain proportions or unlock for creative
+                freedom.
               </p>
             </div>
           </div>
@@ -667,7 +803,9 @@ export default function ResizeImage() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Popular size presets</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Popular size presets
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
                 One-click resizing for social media, devices, and web platforms.
               </p>
@@ -678,9 +816,12 @@ export default function ResizeImage() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Batch resizing</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Fast and Secure
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Premium users can resize multiple images to the same dimensions at once.
+                All resizing is processed securely with fast upload and download
+                speeds.
               </p>
             </div>
           </div>

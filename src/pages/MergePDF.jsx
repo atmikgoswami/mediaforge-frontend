@@ -1,28 +1,29 @@
 import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { mergePDF } from "../services/http/pdf";
-import { fetchProgress } from "../services/http/common";
-import { 
-  Upload, 
-  FileText, 
-  X, 
-  Check, 
-  Loader2, 
-  Download, 
+import useDrivePicker from "react-google-drive-picker";
+import { getAccessToken } from "../utils/googleDrive";
+import {
+  Upload,
+  FileText,
+  X,
+  Check,
+  Loader2,
+  Download,
   RefreshCw,
   CloudUpload,
   GripVertical,
   Plus,
   ArrowUpDown,
   Combine,
-  Info
+  Info,
 } from "lucide-react";
 
 export default function MergePDF() {
   // File states
   const [files, setFiles] = useState([]);
   const fileInputRef = useRef(null);
-  
+
   // Processing states
   const [isUploading, setIsUploading] = useState(false);
   const [taskId, setTaskId] = useState(null);
@@ -30,11 +31,13 @@ export default function MergePDF() {
   const [processingStatus, setProcessingStatus] = useState(null); // 'uploading', 'processing', 'completed', 'error'
   const [resultUrl, setResultUrl] = useState(null);
   const [error, setError] = useState(null);
-  
+  const socketRef = useRef(null);
+  const [openPicker] = useDrivePicker();
+
   // Drag and drop states
   const [draggedIndex, setDraggedIndex] = useState(null);
   const [dragOverIndex, setDragOverIndex] = useState(null);
-  
+
   // Progress polling
   const progressInterval = useRef(null);
 
@@ -50,51 +53,119 @@ export default function MergePDF() {
   // Handle file selection (multiple files)
   const handleFileChange = (event) => {
     const selectedFiles = Array.from(event.target.files);
-    
+
     if (selectedFiles.length === 0) return;
-    
+
     // Validate each file
     const validFiles = [];
     let hasErrors = false;
-    
-    selectedFiles.forEach(file => {
+
+    selectedFiles.forEach((file) => {
       // Check file size (25MB max per file)
       if (file.size > 25 * 1024 * 1024) {
         setError(`File "${file.name}" exceeds 25MB limit.`);
         hasErrors = true;
         return;
       }
-      
+
       // Check file type
       if (file.type !== "application/pdf") {
         setError(`File "${file.name}" is not a PDF.`);
         hasErrors = true;
         return;
       }
-      
+
       validFiles.push({
         id: Math.random().toString(36).substr(2, 9),
         file: file,
         name: file.name,
-        size: file.size
+        size: file.size,
       });
     });
-    
+
     if (!hasErrors) {
       setError(null);
-      setFiles(prevFiles => [...prevFiles, ...validFiles]);
+      setFiles((prevFiles) => [...prevFiles, ...validFiles]);
     }
   };
 
   // Handle Google Drive selection
-  const handleGoogleDriveSelect = () => {
-    // This would typically integrate with Google Drive Picker API
-    alert("Google Drive integration would open a picker here");
+  const handleGoogleDriveSelect = async () => {
+    try {
+      const accessToken = await getAccessToken();
+
+      openPicker({
+        clientId: import.meta.env.VITE_GDRIVE_CLIENT_ID,
+        developerKey: import.meta.env.VITE_GDRIVE_API_KEY,
+        token: accessToken,
+        viewId: "PDFS",
+        showUploadView: true,
+        showUploadFolders: true,
+        supportDrives: true,
+        multiselect: true, // ✅ enable multiple selection
+        callbackFunction: async (data) => {
+          if (data.action !== "picked") return;
+
+          const pickedDocs = data.docs;
+          const newFiles = [];
+          let hasErrors = false;
+
+          for (const doc of pickedDocs) {
+            try {
+              const res = await fetch(
+                `https://www.googleapis.com/drive/v3/files/${doc.id}?alt=media`,
+                {
+                  headers: {
+                    Authorization: `Bearer ${accessToken}`,
+                  },
+                }
+              );
+
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+              const blob = await res.blob();
+              const file = new File([blob], doc.name, { type: doc.mimeType });
+
+              // Validate type and size
+              if (file.type !== "application/pdf") {
+                setError(`"${file.name}" is not a PDF.`);
+                hasErrors = true;
+                continue;
+              }
+              if (file.size > 25 * 1024 * 1024) {
+                setError(`"${file.name}" exceeds 25MB limit.`);
+                hasErrors = true;
+                continue;
+              }
+
+              newFiles.push({
+                id: Math.random().toString(36).substr(2, 9),
+                file,
+                name: file.name,
+                size: file.size,
+              });
+            } catch (err) {
+              console.error(`Failed to download ${doc.name}:`, err);
+              setError(`Failed to download "${doc.name}".`);
+              hasErrors = true;
+            }
+          }
+
+          if (newFiles.length > 0) {
+            setFiles((prev) => [...prev, ...newFiles]);
+          }
+
+          if (!hasErrors) setError(null);
+        },
+      });
+    } catch (err) {
+      console.error("Google Auth Error:", err);
+      setError("Google Drive authentication failed.");
+    }
   };
 
   // Remove a specific file
   const removeFile = (fileId) => {
-    setFiles(files.filter(file => file.id !== fileId));
+    setFiles(files.filter((file) => file.id !== fileId));
     if (files.length === 1) {
       setError(null);
     }
@@ -103,12 +174,12 @@ export default function MergePDF() {
   // Drag and drop handlers
   const handleDragStart = (e, index) => {
     setDraggedIndex(index);
-    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.effectAllowed = "move";
   };
 
   const handleDragOver = (e, index) => {
     e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
+    e.dataTransfer.dropEffect = "move";
     setDragOverIndex(index);
   };
 
@@ -118,7 +189,7 @@ export default function MergePDF() {
 
   const handleDrop = (e, dropIndex) => {
     e.preventDefault();
-    
+
     if (draggedIndex === null || draggedIndex === dropIndex) {
       setDraggedIndex(null);
       setDragOverIndex(null);
@@ -127,14 +198,14 @@ export default function MergePDF() {
 
     const newFiles = [...files];
     const draggedFile = newFiles[draggedIndex];
-    
+
     // Remove the dragged file from its current position
     newFiles.splice(draggedIndex, 1);
-    
+
     // Insert it at the new position
     const insertIndex = draggedIndex < dropIndex ? dropIndex - 1 : dropIndex;
     newFiles.splice(insertIndex, 0, draggedFile);
-    
+
     setFiles(newFiles);
     setDraggedIndex(null);
     setDragOverIndex(null);
@@ -149,7 +220,10 @@ export default function MergePDF() {
   const moveFileUp = (index) => {
     if (index === 0) return;
     const newFiles = [...files];
-    [newFiles[index - 1], newFiles[index]] = [newFiles[index], newFiles[index - 1]];
+    [newFiles[index - 1], newFiles[index]] = [
+      newFiles[index],
+      newFiles[index - 1],
+    ];
     setFiles(newFiles);
   };
 
@@ -157,8 +231,50 @@ export default function MergePDF() {
   const moveFileDown = (index) => {
     if (index === files.length - 1) return;
     const newFiles = [...files];
-    [newFiles[index], newFiles[index + 1]] = [newFiles[index + 1], newFiles[index]];
+    [newFiles[index], newFiles[index + 1]] = [
+      newFiles[index + 1],
+      newFiles[index],
+    ];
     setFiles(newFiles);
+  };
+
+  const startWebSocketListener = (taskId) => {
+    // close any previous socket
+    if (socketRef.current) socketRef.current.close();
+
+    const socket = new WebSocket(`ws://localhost:8080/ws/progress/${taskId}`);
+    socketRef.current = socket; // save for later cleanup
+
+    socket.onopen = () => {
+      console.log("WS open");
+    };
+
+    socket.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+
+      if (data.progress !== undefined) setProgress(+data.progress);
+
+      if (data.status === "completed") {
+        setResultUrl(data.result_url);
+        setProcessingStatus("completed");
+        socket.close();
+      } else if (data.status === "failed") {
+        setError(data.error || "Conversion failed.");
+        setProcessingStatus("error");
+        socket.close();
+      } else if (["queued", "processing"].includes(data.status)) {
+        setProcessingStatus("processing");
+      }
+    };
+
+    socket.onerror = (err) => {
+      console.warn("WS error:", err);
+      setError("WebSocket connection failed.");
+      setProcessingStatus("error");
+      socket.close();
+    };
+
+    socket.onclose = () => console.log("WS closed");
   };
 
   // Upload and process the PDFs
@@ -174,41 +290,16 @@ export default function MergePDF() {
 
     try {
       // Send files in the current order
-      const orderedFiles = files.map(fileObj => fileObj.file);
+      const orderedFiles = files.map((fileObj) => fileObj.file);
       const { task_id } = await mergePDF(orderedFiles);
       setTaskId(task_id);
       setProcessingStatus("processing");
-      startProgressPolling(task_id);
+      startWebSocketListener(task_id);
     } catch (err) {
       setError("Failed to upload PDFs. Please try again.");
       setProcessingStatus("error");
       setIsUploading(false);
     }
-  };
-
-  // Poll for task progress
-  const startProgressPolling = (taskId) => {
-    if (progressInterval.current) {
-      clearInterval(progressInterval.current);
-    }
-
-    progressInterval.current = setInterval(async () => {
-      try {
-        const { progress, result_url } = await fetchProgress(taskId);
-
-        setProgress(progress);
-
-        if (progress >= 100) {
-          clearInterval(progressInterval.current);
-          setProcessingStatus("completed");
-          if (result_url) setResultUrl(result_url);
-        }
-      } catch (err) {
-        clearInterval(progressInterval.current);
-        setError("Failed to fetch progress.");
-        setProcessingStatus("error");
-      }
-    }, 1000);
   };
 
   // Download result
@@ -221,7 +312,8 @@ export default function MergePDF() {
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = "merged_pdf" + resultUrl.substring(resultUrl.lastIndexOf("."));
+      link.download =
+        "merged_pdf" + resultUrl.substring(resultUrl.lastIndexOf("."));
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -236,7 +328,7 @@ export default function MergePDF() {
     if (progressInterval.current) {
       clearInterval(progressInterval.current);
     }
-    
+
     setFiles([]);
     setTaskId(null);
     setProgress(0);
@@ -244,7 +336,7 @@ export default function MergePDF() {
     setResultUrl(null);
     setError(null);
     setIsUploading(false);
-    
+
     // Reset file input
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -254,9 +346,8 @@ export default function MergePDF() {
   // Clean up interval on component unmount
   useEffect(() => {
     return () => {
-      if (progressInterval.current) {
-        clearInterval(progressInterval.current);
-      }
+      if (socketRef.current) socketRef.current.close();
+      if (progressInterval.current) clearInterval(progressInterval.current);
     };
   }, []);
 
@@ -273,8 +364,8 @@ export default function MergePDF() {
       >
         <h1 className="text-3xl font-bold text-gray-800 mb-4">PDF Merger</h1>
         <p className="text-gray-600 max-w-2xl mx-auto">
-          Combine multiple PDF documents into a single file. Upload your PDFs, arrange them in your preferred order, 
-          and merge them seamlessly.
+          Combine multiple PDF documents into a single file. Upload your PDFs,
+          arrange them in your preferred order, and merge them seamlessly.
         </p>
       </motion.div>
 
@@ -286,7 +377,8 @@ export default function MergePDF() {
             <h2 className="text-lg font-semibold text-gray-800">Upload PDFs</h2>
             {files.length > 0 && (
               <span className="text-sm text-gray-500">
-                {files.length} file{files.length !== 1 ? 's' : ''} • {formatFileSize(totalSize)}
+                {files.length} file{files.length !== 1 ? "s" : ""} •{" "}
+                {formatFileSize(totalSize)}
               </span>
             )}
           </div>
@@ -342,23 +434,32 @@ export default function MergePDF() {
               </motion.button>
 
               {error && (
-                <div className="mt-4 text-sm text-red-600">
-                  {error}
-                </div>
+                <div className="mt-4 text-sm text-red-600">{error}</div>
               )}
             </motion.div>
           ) : (
             <div className="space-y-4">
-              {/* Add more files button */}
-              <div className="flex justify-between items-center">
-                <button
-                  onClick={() => fileInputRef.current.click()}
-                  className="flex items-center px-3 py-2 text-sm text-blue-600 bg-blue-50 rounded-md hover:bg-blue-100 transition-colors"
-                >
-                  <Plus className="h-4 w-4 mr-1" />
-                  Add More PDFs
-                </button>
-                <div className="flex items-center text-sm text-gray-500">
+              {/* Add more files buttons */}
+              <div className="flex justify-between items-center flex-wrap gap-2">
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => fileInputRef.current.click()}
+                    className="flex items-center px-3 py-2 text-sm text-blue-600 bg-blue-50 rounded-md hover:bg-blue-100 transition-colors"
+                  >
+                    <Plus className="h-4 w-4 mr-1" />
+                    Add More PDFs
+                  </button>
+
+                  <button
+                    onClick={handleGoogleDriveSelect}
+                    className="flex items-center px-3 py-2 text-sm text-green-600 bg-green-50 rounded-md hover:bg-green-100 transition-colors"
+                  >
+                    <CloudUpload className="h-4 w-4 mr-1" />
+                    Add from Google Drive
+                  </button>
+                </div>
+
+                <div className="flex items-center text-sm text-gray-500 mt-2 sm:mt-0">
                   <ArrowUpDown className="h-4 w-4 mr-1" />
                   Drag to reorder
                 </div>
@@ -383,8 +484,10 @@ export default function MergePDF() {
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -20 }}
                     className={`bg-gray-50 rounded-lg p-4 border-2 transition-all ${
-                      dragOverIndex === index ? 'border-blue-300 bg-blue-50' : 'border-transparent'
-                    } ${draggedIndex === index ? 'opacity-50' : ''}`}
+                      dragOverIndex === index
+                        ? "border-blue-300 bg-blue-50"
+                        : "border-transparent"
+                    } ${draggedIndex === index ? "opacity-50" : ""}`}
                     draggable
                     onDragStart={(e) => handleDragStart(e, index)}
                     onDragOver={(e) => handleDragOver(e, index)}
@@ -437,7 +540,7 @@ export default function MergePDF() {
                       </div>
 
                       {/* Remove Button */}
-                      <button 
+                      <button
                         onClick={() => removeFile(fileObj.id)}
                         className="p-1.5 rounded-full bg-red-100 hover:bg-red-200 text-red-500"
                       >
@@ -481,16 +584,18 @@ export default function MergePDF() {
                       transition={{ duration: 0.5 }}
                     ></motion.div>
                   </div>
-                  
+
                   {/* Status Text */}
                   <div className="flex items-center">
                     {processingStatus === "uploading" && (
                       <>
                         <Loader2 className="animate-spin mr-2 h-4 w-4 text-blue-600" />
-                        <span className="text-sm text-gray-700">Uploading PDFs...</span>
+                        <span className="text-sm text-gray-700">
+                          Uploading PDFs...
+                        </span>
                       </>
                     )}
-                    
+
                     {processingStatus === "processing" && (
                       <>
                         <Loader2 className="animate-spin mr-2 h-4 w-4 text-blue-600" />
@@ -499,14 +604,16 @@ export default function MergePDF() {
                         </span>
                       </>
                     )}
-                    
+
                     {processingStatus === "completed" && (
                       <>
                         <Check className="mr-2 h-4 w-4 text-green-600" />
-                        <span className="text-sm text-gray-700">Merge completed successfully!</span>
+                        <span className="text-sm text-gray-700">
+                          Merge completed successfully!
+                        </span>
                       </>
                     )}
-                    
+
                     {processingStatus === "error" && (
                       <>
                         <X className="mr-2 h-4 w-4 text-red-600" />
@@ -514,7 +621,7 @@ export default function MergePDF() {
                       </>
                     )}
                   </div>
-                  
+
                   {/* Result Actions */}
                   {processingStatus === "completed" && resultUrl && (
                     <div className="flex space-x-3 mt-4">
@@ -543,9 +650,7 @@ export default function MergePDF() {
               )}
 
               {error && files.length > 0 && !processingStatus && (
-                <div className="mt-4 text-sm text-red-600">
-                  {error}
-                </div>
+                <div className="mt-4 text-sm text-red-600">{error}</div>
               )}
 
               {files.length < 2 && files.length > 0 && (
@@ -560,24 +665,35 @@ export default function MergePDF() {
 
         {/* Information Section */}
         <div className="p-6 bg-gray-50">
-          <h3 className="text-lg font-semibold text-gray-800 mb-3">How PDF Merging Works</h3>
+          <h3 className="text-lg font-semibold text-gray-800 mb-3">
+            How PDF Merging Works
+          </h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="bg-white p-4 rounded-lg shadow-sm">
-              <h4 className="font-semibold text-blue-600 mb-2">Smart Page Organization</h4>
+              <h4 className="font-semibold text-blue-600 mb-2">
+                Smart Page Organization
+              </h4>
               <p className="text-sm text-gray-600">
-                Pages are combined in the exact order you specify, maintaining original formatting and structure.
+                Pages are combined in the exact order you specify, maintaining
+                original formatting and structure.
               </p>
             </div>
             <div className="bg-white p-4 rounded-lg shadow-sm">
-              <h4 className="font-semibold text-blue-600 mb-2">Preserve Metadata</h4>
+              <h4 className="font-semibold text-blue-600 mb-2">
+                Preserve Metadata
+              </h4>
               <p className="text-sm text-gray-600">
-                Document properties, bookmarks, and interactive elements are preserved when possible.
+                Document properties, bookmarks, and interactive elements are
+                preserved when possible.
               </p>
             </div>
             <div className="bg-white p-4 rounded-lg shadow-sm">
-              <h4 className="font-semibold text-blue-600 mb-2">Quality Maintained</h4>
+              <h4 className="font-semibold text-blue-600 mb-2">
+                Quality Maintained
+              </h4>
               <p className="text-sm text-gray-600">
-                No quality loss during merging - your documents remain crisp and professional.
+                No quality loss during merging - your documents remain crisp and
+                professional.
               </p>
             </div>
           </div>
@@ -600,9 +716,12 @@ export default function MergePDF() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Drag & drop reordering</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Drag & drop reordering
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Easily rearrange your PDFs by dragging them into the desired order before merging.
+                Easily rearrange your PDFs by dragging them into the desired
+                order before merging.
               </p>
             </div>
           </div>
@@ -611,9 +730,12 @@ export default function MergePDF() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Multiple file support</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Multiple file support
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Combine unlimited PDFs into a single document with our efficient merging engine.
+                Combine unlimited PDFs into a single document with our efficient
+                merging engine.
               </p>
             </div>
           </div>
@@ -622,9 +744,12 @@ export default function MergePDF() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Bookmark preservation</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Bookmark preservation
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Original bookmarks and navigation structure are maintained in the merged document.
+                Original bookmarks and navigation structure are maintained in
+                the merged document.
               </p>
             </div>
           </div>
@@ -633,9 +758,12 @@ export default function MergePDF() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Form field compatibility</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Form field compatibility
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Interactive forms and fillable fields remain functional in the merged PDF.
+                Interactive forms and fillable fields remain functional in the
+                merged PDF.
               </p>
             </div>
           </div>

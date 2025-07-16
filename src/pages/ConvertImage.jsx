@@ -1,19 +1,20 @@
 import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { convertImage } from "../services/http/image";
-import { fetchProgress } from "../services/http/common";
-import { 
-  Upload, 
-  ArrowDownToLine, 
-  Image as ImageIcon, 
-  X, 
-  Check, 
-  Loader2, 
-  Download, 
+import useDrivePicker from "react-google-drive-picker";
+import { getAccessToken } from "../utils/googleDrive";
+import {
+  Upload,
+  ArrowDownToLine,
+  Image as ImageIcon,
+  X,
+  Check,
+  Loader2,
+  Download,
   RefreshCw,
   CloudUpload,
   FileType,
-  ChevronDown
+  ChevronDown,
 } from "lucide-react";
 
 export default function ConvertImage() {
@@ -25,7 +26,7 @@ export default function ConvertImage() {
   const [showFormatDropdown, setShowFormatDropdown] = useState(false);
   const fileInputRef = useRef(null);
   const dropdownRef = useRef(null);
-  
+
   // Processing states
   const [isUploading, setIsUploading] = useState(false);
   const [taskId, setTaskId] = useState(null);
@@ -33,6 +34,8 @@ export default function ConvertImage() {
   const [processingStatus, setProcessingStatus] = useState(null); // 'uploading', 'processing', 'completed', 'error'
   const [resultUrl, setResultUrl] = useState(null);
   const [error, setError] = useState(null);
+  const socketRef = useRef(null);
+  const [openPicker] = useDrivePicker();
 
   // Progress polling
   const progressInterval = useRef(null);
@@ -40,33 +43,48 @@ export default function ConvertImage() {
   // Available formats based on input
   const getAvailableFormats = (inputType) => {
     const allFormats = [
-      { value: 'jpg', label: 'JPG', description: 'Best for photos with many colors' },
-      { value: 'png', label: 'PNG', description: 'Best for images with transparency' },
-      { value: 'webp', label: 'WebP', description: 'Modern format with excellent compression' },
-      { value: 'bmp', label: 'BMP', description: 'Uncompressed bitmap format' },
-      { value: 'tiff', label: 'TIFF', description: 'High-quality format for professional use' },
-      { value: 'gif', label: 'GIF', description: 'Best for simple animations' },
-      { value: 'ico', label: 'ICO', description: 'Icon format for websites' },
-      { value: 'pdf', label: 'PDF', description: 'Document format' }
+      {
+        value: "jpg",
+        label: "JPG",
+        description: "Best for photos with many colors",
+      },
+      {
+        value: "png",
+        label: "PNG",
+        description: "Best for images with transparency",
+      },
+      {
+        value: "webp",
+        label: "WebP",
+        description: "Modern format with excellent compression",
+      },
+      { value: "bmp", label: "BMP", description: "Uncompressed bitmap format" },
+      {
+        value: "tiff",
+        label: "TIFF",
+        description: "High-quality format for professional use",
+      },
+      { value: "gif", label: "GIF", description: "Best for simple animations" },
+      { value: "pdf", label: "PDF", description: "Document format" },
     ];
 
     // Filter out the current input format
-    return allFormats.filter(format => format.value !== inputType);
+    return allFormats.filter((format) => format.value !== inputType);
   };
 
   // Get recommended formats based on input
   const getRecommendedFormats = (inputType) => {
     const recommendations = {
-      'jpg': ['webp', 'png'],
-      'jpeg': ['webp', 'png'],
-      'png': ['webp', 'jpg'],
-      'webp': ['jpg', 'png'],
-      'bmp': ['jpg', 'png', 'webp'],
-      'tiff': ['jpg', 'png', 'webp'],
-      'gif': ['png', 'webp', 'jpg']
+      jpg: ["webp", "png"],
+      jpeg: ["webp", "png"],
+      png: ["webp", "jpg"],
+      webp: ["jpg", "png"],
+      bmp: ["jpg", "png", "webp"],
+      tiff: ["jpg", "png", "webp"],
+      gif: ["png", "webp", "jpg"],
     };
 
-    return recommendations[inputType] || ['jpg', 'png', 'webp'];
+    return recommendations[inputType] || ["jpg", "png", "webp"];
   };
 
   // File size conversion
@@ -80,30 +98,30 @@ export default function ConvertImage() {
 
   // Get file extension from filename
   const getFileExtension = (filename) => {
-    return filename.split('.').pop().toLowerCase();
+    return filename.split(".").pop().toLowerCase();
   };
 
   // Handle file selection
   const handleFileChange = (event) => {
     const selectedFile = event.target.files[0];
-    
+
     if (!selectedFile) return;
-    
+
     // Check file size (10MB max)
     if (selectedFile.size > 10 * 1024 * 1024) {
       setError("File size exceeds 10MB limit.");
       return;
     }
-    
+
     setError(null);
     setFile(selectedFile);
-    
+
     // Detect input format
     const extension = getFileExtension(selectedFile.name);
-    const normalizedExtension = extension === 'jpeg' ? 'jpg' : extension;
+    const normalizedExtension = extension === "jpeg" ? "jpg" : extension;
     setInputFormat(normalizedExtension);
     setSelectedFormat(null); // Reset selected format when new file is uploaded
-    
+
     // Create preview URL for image
     const fileReader = new FileReader();
     fileReader.onload = () => {
@@ -113,20 +131,97 @@ export default function ConvertImage() {
   };
 
   // Handle Google Drive selection
-  const handleGoogleDriveSelect = () => {
-    // This would typically integrate with Google Drive Picker API
-    // For this example, we'll just show a message
-    alert("Google Drive integration would open a picker here");
-    
-    // Simulating a file selection for demonstration
-    // In a real implementation, this would come from the Google Drive API
-    // setFile(...) and setFilePreview(...) would happen after selection
+  const handleGoogleDriveSelect = async () => {
+    try {
+      const accessToken = await getAccessToken();
+
+      openPicker({
+        clientId: import.meta.env.VITE_GDRIVE_CLIENT_ID,
+        developerKey: import.meta.env.VITE_GDRIVE_API_KEY,
+        token: accessToken, // ✅ required for download
+        viewId: "DOCS_IMAGES",
+        showUploadView: true,
+        showUploadFolders: true,
+        supportDrives: true,
+        multiselect: false,
+        callbackFunction: async (data) => {
+          if (data.action !== "picked") return;
+          const doc = data.docs[0];
+          console.log("Picked doc:", doc);
+
+          try {
+            const res = await fetch(
+              `https://www.googleapis.com/drive/v3/files/${doc.id}?alt=media`,
+              {
+                headers: {
+                  Authorization: `Bearer ${accessToken}`, // ✅ auth for download
+                },
+              }
+            );
+
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+            const blob = await res.blob();
+            const file = new File([blob], doc.name, { type: doc.mimeType });
+            setFile(file);
+            setFilePreview(URL.createObjectURL(blob));
+            setError(null);
+          } catch (err) {
+            console.error("Download failed:", err);
+            setError("Couldn’t download the selected Drive file.");
+          }
+        },
+      });
+    } catch (err) {
+      console.error("Google Auth Error:", err);
+      setError("Google Drive authentication failed.");
+    }
   };
 
   // Handle format selection
   const handleFormatSelect = (format) => {
+    if (processingStatus === "completed") return;
     setSelectedFormat(format);
     setShowFormatDropdown(false);
+  };
+
+  const startWebSocketListener = (taskId) => {
+    // close any previous socket
+    if (socketRef.current) socketRef.current.close();
+
+    const socket = new WebSocket(`ws://localhost:8080/ws/progress/${taskId}`);
+    socketRef.current = socket; // save for later cleanup
+
+    socket.onopen = () => {
+      console.log("WS open");
+    };
+
+    socket.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+
+      if (data.progress !== undefined) setProgress(+data.progress);
+
+      if (data.status === "completed") {
+        setResultUrl(data.result_url);
+        setProcessingStatus("completed");
+        socket.close();
+      } else if (data.status === "failed") {
+        setError(data.error || "Conversion failed.");
+        setProcessingStatus("error");
+        socket.close();
+      } else if (["queued", "processing"].includes(data.status)) {
+        setProcessingStatus("processing");
+      }
+    };
+
+    socket.onerror = (err) => {
+      console.warn("WS error:", err);
+      setError("WebSocket connection failed.");
+      setProcessingStatus("error");
+      socket.close();
+    };
+
+    socket.onclose = () => console.log("WS closed");
   };
 
   // Upload and convert the image
@@ -139,40 +234,17 @@ export default function ConvertImage() {
 
     try {
       // In a real implementation, you'd pass the target format to the API
-      const { task_id } = await convertImage(file, { targetFormat: selectedFormat });
+      const { task_id } = await convertImage(file, {
+        targetFormat: selectedFormat,
+      });
       setTaskId(task_id);
       setProcessingStatus("processing");
-      startProgressPolling(task_id);
+      startWebSocketListener(task_id);
     } catch (err) {
       setError("Failed to upload image. Please try again.");
       setProcessingStatus("error");
       setIsUploading(false);
     }
-  };
-
-  // Poll for task progress
-  const startProgressPolling = (taskId) => {
-    if (progressInterval.current) {
-      clearInterval(progressInterval.current);
-    }
-
-    progressInterval.current = setInterval(async () => {
-      try {
-        const { progress, result_url } = await fetchProgress(taskId);
-
-        setProgress(progress);
-
-        if (progress >= 100) {
-          clearInterval(progressInterval.current);
-          setProcessingStatus("completed");
-          if (result_url) setResultUrl(result_url);
-        }
-      } catch (err) {
-        clearInterval(progressInterval.current);
-        setError("Failed to fetch progress.");
-        setProcessingStatus("error");
-      }
-    }, 1000);
   };
 
   // Download converted image
@@ -187,7 +259,7 @@ export default function ConvertImage() {
       link.href = url;
 
       // Generate filename with new extension
-      const originalName = file.name.split('.').slice(0, -1).join('.');
+      const originalName = file.name.split(".").slice(0, -1).join(".");
       link.download = `${originalName}_converted.${selectedFormat}`;
       document.body.appendChild(link);
       link.click();
@@ -203,7 +275,7 @@ export default function ConvertImage() {
     if (progressInterval.current) {
       clearInterval(progressInterval.current);
     }
-    
+
     setFile(null);
     setFilePreview(null);
     setInputFormat(null);
@@ -215,7 +287,7 @@ export default function ConvertImage() {
     setError(null);
     setIsUploading(false);
     setShowFormatDropdown(false);
-    
+
     // Reset file input
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -236,17 +308,17 @@ export default function ConvertImage() {
     };
   }, []);
 
-  // Clean up interval on component unmount
   useEffect(() => {
     return () => {
-      if (progressInterval.current) {
-        clearInterval(progressInterval.current);
-      }
+      if (socketRef.current) socketRef.current.close();
+      if (progressInterval.current) clearInterval(progressInterval.current);
     };
   }, []);
 
   const availableFormats = inputFormat ? getAvailableFormats(inputFormat) : [];
-  const recommendedFormats = inputFormat ? getRecommendedFormats(inputFormat) : [];
+  const recommendedFormats = inputFormat
+    ? getRecommendedFormats(inputFormat)
+    : [];
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -256,10 +328,13 @@ export default function ConvertImage() {
         transition={{ duration: 0.5 }}
         className="text-center mb-8"
       >
-        <h1 className="text-3xl font-bold text-gray-800 mb-4">Image Format Conversion</h1>
+        <h1 className="text-3xl font-bold text-gray-800 mb-4">
+          Image Format Conversion
+        </h1>
         <p className="text-gray-600 max-w-2xl mx-auto">
-          Convert your images between different formats. Choose the perfect format for your needs - 
-          whether it's web optimization, transparency support, or compatibility requirements.
+          Convert your images between different formats. Choose the perfect
+          format for your needs - whether it's web optimization, transparency
+          support, or compatibility requirements.
         </p>
       </motion.div>
 
@@ -267,7 +342,9 @@ export default function ConvertImage() {
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
         {/* File Upload Section */}
         <div className="p-6 border-b border-gray-100">
-          <h2 className="text-lg font-semibold text-gray-800 mb-4">Upload Image</h2>
+          <h2 className="text-lg font-semibold text-gray-800 mb-4">
+            Upload Image
+          </h2>
 
           {!file ? (
             <motion.div
@@ -319,9 +396,7 @@ export default function ConvertImage() {
               </motion.button>
 
               {error && (
-                <div className="mt-4 text-sm text-red-600">
-                  {error}
-                </div>
+                <div className="mt-4 text-sm text-red-600">{error}</div>
               )}
             </motion.div>
           ) : (
@@ -330,10 +405,10 @@ export default function ConvertImage() {
               <div className="w-full md:w-1/3 relative">
                 <div className="aspect-square bg-gray-100 rounded-lg overflow-hidden flex items-center justify-center">
                   {filePreview ? (
-                    <img 
-                      src={filePreview} 
-                      alt="Preview" 
-                      className="max-h-full max-w-full object-contain" 
+                    <img
+                      src={filePreview}
+                      alt="Preview"
+                      className="max-h-full max-w-full object-contain"
                     />
                   ) : (
                     <ImageIcon className="h-12 w-12 text-gray-400" />
@@ -350,10 +425,11 @@ export default function ConvertImage() {
                         {file.name}
                       </p>
                       <p className="text-sm text-gray-500 mt-1">
-                        {formatFileSize(file.size)} • {inputFormat?.toUpperCase()} format
+                        {formatFileSize(file.size)} •{" "}
+                        {inputFormat?.toUpperCase()} format
                       </p>
                     </div>
-                    <button 
+                    <button
                       onClick={handleReset}
                       className="p-1.5 rounded-full bg-gray-200 hover:bg-gray-300 text-gray-500"
                     >
@@ -367,14 +443,16 @@ export default function ConvertImage() {
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Convert to format:
                   </label>
-                  
+
                   {/* Recommended formats */}
                   {recommendedFormats.length > 0 && (
                     <div className="mb-3">
                       <p className="text-xs text-gray-500 mb-2">Recommended:</p>
                       <div className="flex flex-wrap gap-2">
                         {recommendedFormats.map((formatValue) => {
-                          const format = availableFormats.find(f => f.value === formatValue);
+                          const format = availableFormats.find(
+                            (f) => f.value === formatValue
+                          );
                           if (!format) return null;
                           return (
                             <button
@@ -382,8 +460,8 @@ export default function ConvertImage() {
                               onClick={() => handleFormatSelect(format.value)}
                               className={`px-3 py-1.5 text-sm rounded-md border transition-colors ${
                                 selectedFormat === format.value
-                                  ? 'bg-purple-600 text-white border-purple-600'
-                                  : 'bg-white text-gray-700 border-gray-300 hover:bg-purple-50 hover:border-purple-300'
+                                  ? "bg-purple-600 text-white border-purple-600"
+                                  : "bg-white text-gray-700 border-gray-300 hover:bg-purple-50 hover:border-purple-300"
                               }`}
                             >
                               {format.label}
@@ -403,10 +481,11 @@ export default function ConvertImage() {
                       <div className="flex items-center">
                         <FileType className="mr-3 h-5 w-5 text-gray-400" />
                         <span className="text-sm">
-                          {selectedFormat ? 
-                            availableFormats.find(f => f.value === selectedFormat)?.label : 
-                            'Select output format'
-                          }
+                          {selectedFormat
+                            ? availableFormats.find(
+                                (f) => f.value === selectedFormat
+                              )?.label
+                            : "Select output format"}
                         </span>
                       </div>
                       <ChevronDown className="h-4 w-4 text-gray-400" />
@@ -449,7 +528,10 @@ export default function ConvertImage() {
 
                   {selectedFormat && (
                     <p className="mt-2 text-xs text-gray-500">
-                      {availableFormats.find(f => f.value === selectedFormat)?.description}
+                      {
+                        availableFormats.find((f) => f.value === selectedFormat)
+                          ?.description
+                      }
                     </p>
                   )}
                 </div>
@@ -463,8 +545,8 @@ export default function ConvertImage() {
                       disabled={!selectedFormat}
                       className={`flex-1 py-2 px-4 rounded-md flex items-center justify-center transition-colors ${
                         selectedFormat
-                          ? 'bg-purple-600 text-white hover:bg-purple-700'
-                          : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                          ? "bg-purple-600 text-white hover:bg-purple-700"
+                          : "bg-gray-300 text-gray-500 cursor-not-allowed"
                       }`}
                     >
                       <ArrowDownToLine className="mr-2 h-4 w-4" />
@@ -490,34 +572,38 @@ export default function ConvertImage() {
                         transition={{ duration: 0.5 }}
                       ></motion.div>
                     </div>
-                    
+
                     {/* Status Text */}
                     <div className="flex items-center">
                       {processingStatus === "uploading" && (
                         <>
                           <Loader2 className="animate-spin mr-2 h-4 w-4 text-purple-600" />
-                          <span className="text-sm text-gray-700">Uploading image...</span>
+                          <span className="text-sm text-gray-700">
+                            Uploading image...
+                          </span>
                         </>
                       )}
-                      
+
                       {processingStatus === "processing" && (
                         <>
                           <Loader2 className="animate-spin mr-2 h-4 w-4 text-purple-600" />
                           <span className="text-sm text-gray-700">
-                            Converting to {selectedFormat?.toUpperCase()}... {Math.round(progress)}%
+                            Converting to {selectedFormat?.toUpperCase()}...{" "}
+                            {Math.round(progress)}%
                           </span>
                         </>
                       )}
-                      
+
                       {processingStatus === "completed" && (
                         <>
                           <Check className="mr-2 h-4 w-4 text-green-600" />
                           <span className="text-sm text-gray-700">
-                            Conversion to {selectedFormat?.toUpperCase()} completed!
+                            Conversion to {selectedFormat?.toUpperCase()}{" "}
+                            completed!
                           </span>
                         </>
                       )}
-                      
+
                       {processingStatus === "error" && (
                         <>
                           <X className="mr-2 h-4 w-4 text-red-600" />
@@ -525,7 +611,7 @@ export default function ConvertImage() {
                         </>
                       )}
                     </div>
-                    
+
                     {/* Result Actions */}
                     {processingStatus === "completed" && resultUrl && (
                       <div className="flex space-x-3 mt-4">
@@ -558,24 +644,29 @@ export default function ConvertImage() {
 
         {/* Information Section */}
         <div className="p-6 bg-gray-50">
-          <h3 className="text-lg font-semibold text-gray-800 mb-3">Format Guide</h3>
+          <h3 className="text-lg font-semibold text-gray-800 mb-3">
+            Format Guide
+          </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             <div className="bg-white p-4 rounded-lg shadow-sm">
               <h4 className="font-semibold text-purple-600 mb-2">JPG/JPEG</h4>
               <p className="text-sm text-gray-600">
-                Best for photographs and images with many colors. Smaller file sizes but no transparency.
+                Best for photographs and images with many colors. Smaller file
+                sizes but no transparency.
               </p>
             </div>
             <div className="bg-white p-4 rounded-lg shadow-sm">
               <h4 className="font-semibold text-purple-600 mb-2">PNG</h4>
               <p className="text-sm text-gray-600">
-                Perfect for images with transparency, logos, and graphics with sharp edges.
+                Perfect for images with transparency, logos, and graphics with
+                sharp edges.
               </p>
             </div>
             <div className="bg-white p-4 rounded-lg shadow-sm">
               <h4 className="font-semibold text-purple-600 mb-2">WebP</h4>
               <p className="text-sm text-gray-600">
-                Modern format with excellent compression and quality. Great for web use.
+                Modern format with excellent compression and quality. Great for
+                web use.
               </p>
             </div>
             <div className="bg-white p-4 rounded-lg shadow-sm">
@@ -616,9 +707,12 @@ export default function ConvertImage() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Smart format recommendations</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Smart format recommendations
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Get intelligent suggestions based on your input format and use case.
+                Get intelligent suggestions based on your input format and use
+                case.
               </p>
             </div>
           </div>
@@ -627,9 +721,12 @@ export default function ConvertImage() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Quality preservation</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Quality preservation
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Advanced algorithms ensure maximum quality retention during conversion.
+                Advanced algorithms ensure maximum quality retention during
+                conversion.
               </p>
             </div>
           </div>
@@ -638,9 +735,12 @@ export default function ConvertImage() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Multiple format support</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Multiple format support
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Convert between all major image formats including modern WebP and legacy formats.
+                Convert between all major image formats including modern WebP
+                and legacy formats.
               </p>
             </div>
           </div>
@@ -649,9 +749,12 @@ export default function ConvertImage() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Batch conversion</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Fast and Secure
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Premium users can convert multiple images to different formats simultaneously.
+                All conversions are processed securely with fast upload and
+                download speeds.
               </p>
             </div>
           </div>

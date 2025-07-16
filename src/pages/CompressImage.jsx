@@ -1,19 +1,20 @@
 import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { uploadImage } from "../services/http/image";
-import { fetchProgress } from "../services/http/common";
-import { 
-  Upload, 
-  ArrowDownToLine, 
-  Image, 
-  X, 
-  Check, 
-  Loader2, 
-  Download, 
+import useDrivePicker from "react-google-drive-picker";
+import { getAccessToken } from "../utils/googleDrive";
+import {
+  Upload,
+  ArrowDownToLine,
+  Image,
+  X,
+  Check,
+  Loader2,
+  Download,
   RefreshCw,
   CloudUpload,
   Settings,
-  ChevronDown
+  ChevronDown,
 } from "lucide-react";
 
 export default function CompressImage() {
@@ -21,7 +22,7 @@ export default function CompressImage() {
   const [file, setFile] = useState(null);
   const [filePreview, setFilePreview] = useState(null);
   const fileInputRef = useRef(null);
-  
+
   // Processing states
   const [isUploading, setIsUploading] = useState(false);
   const [taskId, setTaskId] = useState(null);
@@ -29,12 +30,14 @@ export default function CompressImage() {
   const [processingStatus, setProcessingStatus] = useState(null); // 'uploading', 'processing', 'completed', 'error'
   const [resultUrl, setResultUrl] = useState(null);
   const [error, setError] = useState(null);
+  const [openPicker] = useDrivePicker();
 
   // Settings states
   const [showSettings, setShowSettings] = useState(false);
   const [preserveFormat, setPreserveFormat] = useState(true);
-  const [targetSizeKb, setTargetSizeKb] = useState('');
-  
+  const [targetSizeKb, setTargetSizeKb] = useState("");
+  const socketRef = useRef(null);
+
   // Progress polling
   const progressInterval = useRef(null);
 
@@ -50,18 +53,18 @@ export default function CompressImage() {
   // Handle file selection
   const handleFileChange = (event) => {
     const selectedFile = event.target.files[0];
-    
+
     if (!selectedFile) return;
-    
+
     // Check file size (10MB max)
     if (selectedFile.size > 10 * 1024 * 1024) {
       setError("File size exceeds 10MB limit.");
       return;
     }
-    
+
     setError(null);
     setFile(selectedFile);
-    
+
     // Create preview URL for image
     const fileReader = new FileReader();
     fileReader.onload = () => {
@@ -70,15 +73,91 @@ export default function CompressImage() {
     fileReader.readAsDataURL(selectedFile);
   };
 
+  const startWebSocketListener = (taskId) => {
+    // close any previous socket
+    if (socketRef.current) socketRef.current.close();
+
+    const socket = new WebSocket(`ws://localhost:8080/ws/progress/${taskId}`);
+    socketRef.current = socket; // save for later cleanup
+
+    socket.onopen = () => {
+      console.log("WS open");
+    };
+
+    socket.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+
+      if (data.progress !== undefined) setProgress(+data.progress);
+
+      if (data.status === "completed") {
+        setResultUrl(data.result_url);
+        setProcessingStatus("completed");
+        socket.close();
+      } else if (data.status === "failed") {
+        setError(data.error || "Conversion failed.");
+        setProcessingStatus("error");
+        socket.close();
+      } else if (["queued", "processing"].includes(data.status)) {
+        setProcessingStatus("processing");
+      }
+    };
+
+    socket.onerror = (err) => {
+      console.warn("WS error:", err);
+      setError("WebSocket connection failed.");
+      setProcessingStatus("error");
+      socket.close();
+    };
+
+    socket.onclose = () => console.log("WS closed");
+  };
+
   // Handle Google Drive selection
-  const handleGoogleDriveSelect = () => {
-    // This would typically integrate with Google Drive Picker API
-    // For this example, we'll just show a message
-    alert("Google Drive integration would open a picker here");
-    
-    // Simulating a file selection for demonstration
-    // In a real implementation, this would come from the Google Drive API
-    // setFile(...) and setFilePreview(...) would happen after selection
+  const handleGoogleDriveSelect = async () => {
+    try {
+      const accessToken = await getAccessToken();
+
+      openPicker({
+        clientId: import.meta.env.VITE_GDRIVE_CLIENT_ID,
+        developerKey: import.meta.env.VITE_GDRIVE_API_KEY,
+        token: accessToken, // ✅ required for download
+        viewId: "DOCS_IMAGES",
+        showUploadView: true,
+        showUploadFolders: true,
+        supportDrives: true,
+        multiselect: false,
+        callbackFunction: async (data) => {
+          if (data.action !== "picked") return;
+          const doc = data.docs[0];
+          console.log("Picked doc:", doc);
+
+          try {
+            const res = await fetch(
+              `https://www.googleapis.com/drive/v3/files/${doc.id}?alt=media`,
+              {
+                headers: {
+                  Authorization: `Bearer ${accessToken}`, // ✅ auth for download
+                },
+              }
+            );
+
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+            const blob = await res.blob();
+            const file = new File([blob], doc.name, { type: doc.mimeType });
+            setFile(file);
+            setFilePreview(URL.createObjectURL(blob));
+            setError(null);
+          } catch (err) {
+            console.error("Download failed:", err);
+            setError("Couldn’t download the selected Drive file.");
+          }
+        },
+      });
+    } catch (err) {
+      console.error("Google Auth Error:", err);
+      setError("Google Drive authentication failed.");
+    }
   };
 
   // Upload and process the image
@@ -94,13 +173,13 @@ export default function CompressImage() {
       const uploadOptions = {
         quality: 75,
         preserve_format: preserveFormat,
-        target_size_kb: targetSizeKb ? parseInt(targetSizeKb) : null
+        target_size_kb: targetSizeKb ? parseInt(targetSizeKb) : null,
       };
-      
+
       const { task_id } = await uploadImage(file, uploadOptions);
       setTaskId(task_id);
       setProcessingStatus("processing");
-      startProgressPolling(task_id);
+      startWebSocketListener(task_id);
     } catch (err) {
       setError("Failed to upload image. Please try again.");
       setProcessingStatus("error");
@@ -108,60 +187,35 @@ export default function CompressImage() {
     }
   };
 
-  // Poll for task progress
-  const startProgressPolling = (taskId) => {
-    if (progressInterval.current) {
-      clearInterval(progressInterval.current);
-    }
-
-    progressInterval.current = setInterval(async () => {
-      try {
-        const { progress, result_url } = await fetchProgress(taskId);
-
-        setProgress(progress);
-
-        if (progress >= 100) {
-          clearInterval(progressInterval.current);
-          setProcessingStatus("completed");
-          if (result_url) setResultUrl(result_url);
-        }
-      } catch (err) {
-        clearInterval(progressInterval.current);
-        setError("Failed to fetch progress.");
-        setProcessingStatus("error");
-      }
-    }, 1000);
-  };
-
   //Download Image
   const downloadResult = async () => {
-  if (!resultUrl) return;
+    if (!resultUrl) return;
 
-  try {
-    const response = await fetch(resultUrl);
-    const blob = await response.blob();
-    const url = window.URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
+    try {
+      const response = await fetch(resultUrl);
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
 
-    // You can set a default filename here
-    link.download = "compressed_image" + resultUrl.substring(resultUrl.lastIndexOf("."));
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    window.URL.revokeObjectURL(url);
-  } catch (err) {
-    setError("Failed to download the file.");
-  }
-};
-
+      // You can set a default filename here
+      link.download =
+        "compressed_image" + resultUrl.substring(resultUrl.lastIndexOf("."));
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      setError("Failed to download the file.");
+    }
+  };
 
   // Reset everything to start over
   const handleReset = () => {
     if (progressInterval.current) {
       clearInterval(progressInterval.current);
     }
-    
+
     setFile(null);
     setFilePreview(null);
     setTaskId(null);
@@ -170,7 +224,7 @@ export default function CompressImage() {
     setResultUrl(null);
     setError(null);
     setIsUploading(false);
-    
+
     // Reset file input
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -180,9 +234,8 @@ export default function CompressImage() {
   // Clean up interval on component unmount
   useEffect(() => {
     return () => {
-      if (progressInterval.current) {
-        clearInterval(progressInterval.current);
-      }
+      if (socketRef.current) socketRef.current.close();
+      if (progressInterval.current) clearInterval(progressInterval.current);
     };
   }, []);
 
@@ -194,10 +247,12 @@ export default function CompressImage() {
         transition={{ duration: 0.5 }}
         className="text-center mb-8"
       >
-        <h1 className="text-3xl font-bold text-gray-800 mb-4">Image Compression</h1>
+        <h1 className="text-3xl font-bold text-gray-800 mb-4">
+          Image Compression
+        </h1>
         <p className="text-gray-600 max-w-2xl mx-auto">
-          Reduce the file size of your images while maintaining quality. Perfect for websites, 
-          email attachments, or saving storage space.
+          Reduce the file size of your images while maintaining quality. Perfect
+          for websites, email attachments, or saving storage space.
         </p>
       </motion.div>
 
@@ -206,24 +261,28 @@ export default function CompressImage() {
         {/* File Upload Section */}
         <div className="p-6 border-b border-gray-100">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-gray-800">Upload Image</h2>
-            
+            <h2 className="text-lg font-semibold text-gray-800">
+              Upload Image
+            </h2>
+
             {/* Settings Button */}
             <motion.button
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
               onClick={() => setShowSettings(!showSettings)}
               className={`flex items-center px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                showSettings 
-                  ? 'bg-blue-100 text-blue-700' 
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                showSettings
+                  ? "bg-blue-100 text-blue-700"
+                  : "bg-gray-100 text-gray-700 hover:bg-gray-200"
               }`}
             >
               <Settings className="mr-2 h-4 w-4" />
               Settings
-              <ChevronDown className={`ml-1 h-4 w-4 transition-transform ${
-                showSettings ? 'rotate-180' : ''
-              }`} />
+              <ChevronDown
+                className={`ml-1 h-4 w-4 transition-transform ${
+                  showSettings ? "rotate-180" : ""
+                }`}
+              />
             </motion.button>
           </div>
 
@@ -237,8 +296,10 @@ export default function CompressImage() {
                 transition={{ duration: 0.2 }}
                 className="mb-6 bg-gray-50 rounded-lg p-4 border"
               >
-                <h3 className="text-sm font-semibold text-gray-800 mb-3">Compression Settings</h3>
-                
+                <h3 className="text-sm font-semibold text-gray-800 mb-3">
+                  Compression Settings
+                </h3>
+
                 <div className="space-y-4">
                   {/* Preserve Format Option */}
                   <div className="flex items-center">
@@ -249,17 +310,26 @@ export default function CompressImage() {
                       onChange={(e) => setPreserveFormat(e.target.checked)}
                       className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
                     />
-                    <label htmlFor="preserveFormat" className="ml-3 text-sm text-gray-700">
-                      <span className="font-medium">Preserve Original Image Format</span>
+                    <label
+                      htmlFor="preserveFormat"
+                      className="ml-3 text-sm text-gray-700"
+                    >
+                      <span className="font-medium">
+                        Preserve Original Image Format
+                      </span>
                       <p className="text-gray-500 text-xs mt-1">
-                        Keep the same file format (JPG, PNG, etc.) instead of auto-converting to optimal format
+                        Keep the same file format (JPG, PNG, etc.) instead of
+                        auto-converting to optimal format
                       </p>
                     </label>
                   </div>
 
                   {/* Target Size Option */}
                   <div>
-                    <label htmlFor="targetSize" className="block text-sm font-medium text-gray-700 mb-2">
+                    <label
+                      htmlFor="targetSize"
+                      className="block text-sm font-medium text-gray-700 mb-2"
+                    >
                       Target Image Size (KB)
                     </label>
                     <input
@@ -273,7 +343,8 @@ export default function CompressImage() {
                       max="10240"
                     />
                     <p className="text-gray-500 text-xs mt-1">
-                      Specify a target file size. Leave empty for automatic optimization.
+                      Specify a target file size. Leave empty for automatic
+                      optimization.
                     </p>
                   </div>
                 </div>
@@ -331,9 +402,7 @@ export default function CompressImage() {
               </motion.button>
 
               {error && (
-                <div className="mt-4 text-sm text-red-600">
-                  {error}
-                </div>
+                <div className="mt-4 text-sm text-red-600">{error}</div>
               )}
             </motion.div>
           ) : (
@@ -342,10 +411,10 @@ export default function CompressImage() {
               <div className="w-full md:w-1/3 relative">
                 <div className="aspect-square bg-gray-100 rounded-lg overflow-hidden flex items-center justify-center">
                   {filePreview ? (
-                    <img 
-                      src={filePreview} 
-                      alt="Preview" 
-                      className="max-h-full max-w-full object-contain" 
+                    <img
+                      src={filePreview}
+                      alt="Preview"
+                      className="max-h-full max-w-full object-contain"
                     />
                   ) : (
                     <Image className="h-12 w-12 text-gray-400" />
@@ -364,24 +433,34 @@ export default function CompressImage() {
                       <p className="text-sm text-gray-500 mt-1">
                         {formatFileSize(file.size)}
                       </p>
-                      
+
                       {/* Settings Summary */}
                       <div className="mt-3 space-y-1">
                         <div className="flex items-center text-xs text-gray-600">
-                          <span className={`inline-block w-2 h-2 rounded-full mr-2 ${
-                            preserveFormat ? 'bg-green-500' : 'bg-gray-400'
-                          }`}></span>
-                          Format: {preserveFormat ? 'Preserve original' : 'Auto-optimize'}
+                          <span
+                            className={`inline-block w-2 h-2 rounded-full mr-2 ${
+                              preserveFormat ? "bg-green-500" : "bg-gray-400"
+                            }`}
+                          ></span>
+                          Format:{" "}
+                          {preserveFormat
+                            ? "Preserve original"
+                            : "Auto-optimize"}
                         </div>
                         <div className="flex items-center text-xs text-gray-600">
-                          <span className={`inline-block w-2 h-2 rounded-full mr-2 ${
-                            targetSizeKb ? 'bg-blue-500' : 'bg-gray-400'
-                          }`}></span>
-                          Target size: {targetSizeKb ? `${targetSizeKb} KB` : 'Auto-optimize'}
+                          <span
+                            className={`inline-block w-2 h-2 rounded-full mr-2 ${
+                              targetSizeKb ? "bg-blue-500" : "bg-gray-400"
+                            }`}
+                          ></span>
+                          Target size:{" "}
+                          {targetSizeKb
+                            ? `${targetSizeKb} KB`
+                            : "Auto-optimize"}
                         </div>
                       </div>
                     </div>
-                    <button 
+                    <button
                       onClick={handleReset}
                       className="p-1.5 rounded-full bg-gray-200 hover:bg-gray-300 text-gray-500"
                     >
@@ -421,16 +500,18 @@ export default function CompressImage() {
                         transition={{ duration: 0.5 }}
                       ></motion.div>
                     </div>
-                    
+
                     {/* Status Text */}
                     <div className="flex items-center">
                       {processingStatus === "uploading" && (
                         <>
                           <Loader2 className="animate-spin mr-2 h-4 w-4 text-blue-600" />
-                          <span className="text-sm text-gray-700">Uploading image...</span>
+                          <span className="text-sm text-gray-700">
+                            Uploading image...
+                          </span>
                         </>
                       )}
-                      
+
                       {processingStatus === "processing" && (
                         <>
                           <Loader2 className="animate-spin mr-2 h-4 w-4 text-blue-600" />
@@ -439,14 +520,16 @@ export default function CompressImage() {
                           </span>
                         </>
                       )}
-                      
+
                       {processingStatus === "completed" && (
                         <>
                           <Check className="mr-2 h-4 w-4 text-green-600" />
-                          <span className="text-sm text-gray-700">Compression completed!</span>
+                          <span className="text-sm text-gray-700">
+                            Compression completed!
+                          </span>
                         </>
                       )}
-                      
+
                       {processingStatus === "error" && (
                         <>
                           <X className="mr-2 h-4 w-4 text-red-600" />
@@ -454,7 +537,7 @@ export default function CompressImage() {
                         </>
                       )}
                     </div>
-                    
+
                     {/* Result Actions */}
                     {processingStatus === "completed" && resultUrl && (
                       <div className="flex space-x-3 mt-4">
@@ -488,24 +571,34 @@ export default function CompressImage() {
 
         {/* Information Section */}
         <div className="p-6 bg-gray-50">
-          <h3 className="text-lg font-semibold text-gray-800 mb-3">Why Compress Images?</h3>
+          <h3 className="text-lg font-semibold text-gray-800 mb-3">
+            Why Compress Images?
+          </h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="bg-white p-4 rounded-lg shadow-sm">
-              <h4 className="font-semibold text-blue-600 mb-2">Faster Website Loading</h4>
+              <h4 className="font-semibold text-blue-600 mb-2">
+                Faster Website Loading
+              </h4>
               <p className="text-sm text-gray-600">
-                Compressed images load faster, improving user experience and SEO rankings.
+                Compressed images load faster, improving user experience and SEO
+                rankings.
               </p>
             </div>
             <div className="bg-white p-4 rounded-lg shadow-sm">
-              <h4 className="font-semibold text-blue-600 mb-2">Save Storage Space</h4>
+              <h4 className="font-semibold text-blue-600 mb-2">
+                Save Storage Space
+              </h4>
               <p className="text-sm text-gray-600">
                 Reduce file sizes by up to 80% without noticeable quality loss.
               </p>
             </div>
             <div className="bg-white p-4 rounded-lg shadow-sm">
-              <h4 className="font-semibold text-blue-600 mb-2">Easier Sharing</h4>
+              <h4 className="font-semibold text-blue-600 mb-2">
+                Easier Sharing
+              </h4>
               <p className="text-sm text-gray-600">
-                Email attachments and social media uploads become quicker and more reliable.
+                Email attachments and social media uploads become quicker and
+                more reliable.
               </p>
             </div>
           </div>
@@ -528,9 +621,12 @@ export default function CompressImage() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Smart compression algorithm</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Smart compression algorithm
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Our AI-powered compression preserves image quality where it matters most.
+                Our efficient image compression algorithm preserves image quality where it
+                matters most.
               </p>
             </div>
           </div>
@@ -539,9 +635,12 @@ export default function CompressImage() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Multiple format support</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Multiple format support
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Works with JPG, PNG, WebP and automatically chooses the best format.
+                Works with JPG, PNG, WebP and automatically chooses the best
+                format.
               </p>
             </div>
           </div>
@@ -550,9 +649,12 @@ export default function CompressImage() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Metadata preservation</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Fast and efficient compression
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Option to keep or remove EXIF data based on your privacy needs.
+                Optimized for speed, our tool compresses images in seconds
+                without sacrificing quality.
               </p>
             </div>
           </div>
@@ -561,9 +663,12 @@ export default function CompressImage() {
               <Check className="h-5 w-5 text-green-500" />
             </div>
             <div className="ml-3">
-              <h3 className="text-sm font-medium text-gray-900">Batch processing</h3>
+              <h3 className="text-sm font-medium text-gray-900">
+                Optional Settings
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Premium users can compress multiple images at once with our batch tool.
+                Select optional settings like target size and format
+                preservation for tailored compression.
               </p>
             </div>
           </div>

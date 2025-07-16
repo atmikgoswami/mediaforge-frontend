@@ -1,7 +1,22 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { Link } from "react-router-dom";
-import { FileDown, FilePlus, ImagePlus, FileText, SplitSquareHorizontal, ArrowDownToLine, ArrowUpToLine, Images, Combine, FileOutput, Scissors } from "lucide-react";
+import LockIcon from '../assets/lock.svg';
+import ZapIcon from '../assets/zap.svg';
+import GithubIcon from '../assets/github.svg';
+import {
+  FileDown,
+  FilePlus,
+  ImagePlus,
+  FileText,
+  SplitSquareHorizontal,
+  ArrowDownToLine,
+  ArrowUpToLine,
+  Images,
+  Combine,
+  FileOutput,
+  Scissors,
+} from "lucide-react";
 
 export default function Home() {
   const [hoveredCard, setHoveredCard] = useState(null);
@@ -35,7 +50,7 @@ export default function Home() {
       category: "image",
       color: "bg-violet-100 border-violet-300",
       iconBg: "bg-violet-200",
-      path: "/image/resize", 
+      path: "/image/resize",
     },
     {
       id: "pdf-compress",
@@ -60,7 +75,8 @@ export default function Home() {
     {
       id: "pdf-merge",
       title: "Merge PDF",
-      description: "Combine PDFs in the order you want with the easiest PDF merger",
+      description:
+        "Combine PDFs in the order you want with the easiest PDF merger",
       icon: <Combine className="text-red-600" size={24} />,
       category: "pdf",
       color: "bg-red-100 border-red-300",
@@ -140,58 +156,37 @@ export default function Home() {
         >
           {filteredFunctionalities.map((func) => (
             <Link to={func.path}>
-            <motion.div
-              key={func.id}
-              variants={item}
-              className={`relative overflow-hidden rounded-lg border ${func.color} p-6 shadow-sm transition-all duration-300 hover:shadow-md cursor-pointer`}
-              onMouseEnter={() => setHoveredCard(func.id)}
-              onMouseLeave={() => setHoveredCard(null)}
-              whileHover={{ y: -5 }}
-            >
-              <div className="flex items-start">
-                <div
-                  className={`flex h-12 w-12 items-center justify-center rounded-lg ${func.iconBg}`}
-                >
-                  {func.icon}
-                </div>
-                <div className="ml-4">
-                  <h3 className="text-lg font-medium text-gray-900">
-                    {func.title}
-                  </h3>
-                  <p className="mt-2 text-sm text-gray-500">
-                    {func.description}
-                  </p>
-                </div>
-              </div>
               <motion.div
-                className="absolute bottom-0 left-0 h-1 bg-blue-600"
-                initial={{ width: 0 }}
-                animate={{
-                  width: hoveredCard === func.id ? "100%" : 0,
-                }}
-                transition={{ duration: 0.3 }}
-              />
-            </motion.div>
+                key={func.id}
+                variants={item}
+                className={`relative overflow-hidden rounded-lg border ${func.color} p-6 shadow-sm transition-all duration-300 hover:shadow-md hover:scale-105 cursor-pointer`}
+                onMouseEnter={() => setHoveredCard(func.id)}
+                onMouseLeave={() => setHoveredCard(null)}
+                whileHover={{ y: -5 }}
+              >
+                <div className="flex items-start">
+                  <div
+                    className={`flex h-12 w-12 items-center justify-center rounded-lg ${func.iconBg}`}
+                  >
+                    {func.icon}
+                  </div>
+                  <div className="ml-4">
+                    <h3 className="text-lg font-medium text-gray-900">
+                      {func.title}
+                    </h3>
+                    <p className="mt-2 text-sm text-gray-500">
+                      {func.description}
+                    </p>
+                  </div>
+                </div>
+              </motion.div>
             </Link>
           ))}
         </motion.div>
 
-        <div className="mt-16 flex justify-center">
-          <motion.div
-            className="rounded-full bg-blue-600 px-6 py-3 text-white shadow-lg"
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-          >
-            <div className="flex items-center space-x-2">
-              <ArrowUpToLine size={20} />
-              <span className="font-medium">Upload a file to start</span>
-            </div>
-          </motion.div>
-        </div>
-        
         <div className="mt-24 py-16 bg-gradient-to-r from-gray-50 to-gray-100 rounded-xl shadow-sm">
           <div className="max-w-4xl mx-auto text-center px-4">
-            <motion.h2 
+            <motion.h2
               className="text-4xl md:text-5xl font-bold text-gray-800 mb-6"
               initial={{ opacity: 0, y: 20 }}
               whileInView={{ opacity: 1, y: 0 }}
@@ -199,37 +194,55 @@ export default function Home() {
             >
               Mediaforge: Your one stop solution to all your media needs
             </motion.h2>
-            <motion.p 
+            <motion.p
               className="text-lg text-gray-600 max-w-3xl mx-auto"
               initial={{ opacity: 0, y: 20 }}
               whileInView={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.7, delay: 0.2 }}
             >
-              Explore the wide range of powerful tools designed to help you manage, edit, and convert your files with ease. Our secure platform ensures your data remains protected while providing professional-grade functionality.
+              Explore the wide range of powerful tools designed to help you
+              manage, edit, and convert your files with ease. Our secure
+              platform ensures your data remains protected while providing
+              professional-grade functionality.
             </motion.p>
-            
-            <motion.div 
+
+            <motion.div
               className="mt-12 flex justify-center space-x-12"
               initial={{ opacity: 0, y: 20 }}
               whileInView={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.7, delay: 0.4 }}
             >
               <div className="flex flex-col items-center">
-                <img src="/api/placeholder/80/80" alt="ISO Certification" className="h-12 opacity-70" />
-                <p className="mt-2 text-sm text-gray-500">ISO 27001</p>
+                <img
+                  src={GithubIcon}
+                  alt="Open Source"
+                  className="h-10 hover:scale-105 transition-transform duration-300"
+                />
+                <p className="mt-2 text-sm text-gray-500">
+                  Open Source on GitHub
+                </p>
               </div>
               <div className="flex flex-col items-center">
-                <img src="/api/placeholder/80/80" alt="Secure Encryption" className="h-12 opacity-70" />
-                <p className="mt-2 text-sm text-gray-500">SECURE ENCRYPTION</p>
+                <img
+                  src={LockIcon}
+                  alt="Secure"
+                  className="h-10 hover:scale-105 transition-transform duration-300"
+                />
+                <p className="mt-2 text-sm text-gray-500">
+                  Privacy-First & Secure
+                </p>
               </div>
               <div className="flex flex-col items-center">
-                <img src="/api/placeholder/80/80" alt="PDF Association" className="h-12 opacity-70" />
-                <p className="mt-2 text-sm text-gray-500">PDF ASSOCIATION</p>
+                <img
+                  src={ZapIcon}
+                  alt="Fast"
+                  className="h-10 hover:scale-105 transition-transform duration-300"
+                />
+                <p className="mt-2 text-sm text-gray-500">Fast & Lightweight</p>
               </div>
             </motion.div>
           </div>
         </div>
-
       </div>
     </div>
   );

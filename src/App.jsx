@@ -1,14 +1,21 @@
-import { useState, useEffect } from 'react';
-import { BrowserRouter as Router, Route, Routes, Link, useLocation } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
-import Home from './pages/Home';
-import CompressImage from './pages/CompressImage';
-import ConvertImage from './pages/ConvertImage';
-import ResizeImage from './pages/ResizeImage';
-import CompressPDF from './pages/CompressPDF';
-import ExtractPDF from './pages/ExtractPDF';
-import MergePDF from './pages/MergePDF';
-import { Menu, X, ChevronDown, FileText, Images } from 'lucide-react';
+import { useState, useEffect } from "react";
+import {
+  BrowserRouter as Router,
+  Route,
+  Routes,
+  Link,
+  useLocation,
+} from "react-router-dom";
+import Logo from "./assets/logo.png";
+import { motion, AnimatePresence } from "framer-motion";
+import Home from "./pages/Home";
+import CompressImage from "./pages/CompressImage";
+import ConvertImage from "./pages/ConvertImage";
+import ResizeImage from "./pages/ResizeImage";
+import CompressPDF from "./pages/CompressPDF";
+import ExtractPDF from "./pages/ExtractPDF";
+import MergePDF from "./pages/MergePDF";
+import { Menu, X, ChevronDown, FileText, Images } from "lucide-react";
 
 // Navigation items with grouping
 const navigationItems = [
@@ -18,8 +25,8 @@ const navigationItems = [
     items: [
       { name: "Compress Image", path: "/image/compress" },
       { name: "Convert Image", path: "/image/convert" },
-      { name: "Resize Image", path: "/image/resize" }
-    ]
+      { name: "Resize Image", path: "/image/resize" },
+    ],
   },
   {
     category: "PDF",
@@ -27,9 +34,9 @@ const navigationItems = [
     items: [
       { name: "Compress PDF", path: "/pdf/compress" },
       { name: "Extract PDF", path: "/pdf/extract" },
-      { name: "Merge PDF", path: "/pdf/merge" }
-    ]
-  }
+      { name: "Merge PDF", path: "/pdf/merge" },
+    ],
+  },
 ];
 
 // A wrapper component to get the current route
@@ -60,21 +67,25 @@ const AppContent = () => {
             {/* Logo */}
             <div className="flex-shrink-0 flex items-center">
               <Link to="/" className="flex items-center">
-                <motion.div
+                <motion.img
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
-                >
-                  <span className="text-2xl font-extrabold text-blue-600 tracking-tight">Mediaforge</span>
-                </motion.div>
+                  src={Logo}
+                  alt="Mediaforge logo"
+                  className="h-50 mt-2 w-auto"
+                />
               </Link>
             </div>
 
             {/* Desktop Navigation */}
             <nav className="hidden md:flex space-x-8">
-              <Link to="/" className="text-gray-700 hover:text-blue-600 px-3 py-2 text-md font-medium transition-colors duration-200">
+              <Link
+                to="/"
+                className="text-gray-700 hover:text-blue-600 px-3 py-2 text-md font-medium transition-colors duration-200"
+              >
                 Home
               </Link>
-              
+
               {navigationItems.map((category) => (
                 <div key={category.category} className="relative group">
                   <button
@@ -85,7 +96,7 @@ const AppContent = () => {
                     {category.category}
                     <ChevronDown size={16} className="ml-1" />
                   </button>
-                  
+
                   <div className="absolute left-0 mt-2 w-48 bg-white rounded-md shadow-lg py-1 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50">
                     {category.items.map((item) => (
                       <Link
@@ -129,7 +140,7 @@ const AppContent = () => {
                 >
                   Home
                 </Link>
-                
+
                 {navigationItems.map((category) => (
                   <div key={category.category} className="space-y-1">
                     <button
@@ -140,9 +151,13 @@ const AppContent = () => {
                         <span className="mr-2">{category.icon}</span>
                         {category.category}
                       </div>
-                      <ChevronDown 
-                        size={16} 
-                        className={`transition-transform duration-200 ${expandedCategory === category.category ? 'transform rotate-180' : ''}`} 
+                      <ChevronDown
+                        size={16}
+                        className={`transition-transform duration-200 ${
+                          expandedCategory === category.category
+                            ? "transform rotate-180"
+                            : ""
+                        }`}
                       />
                     </button>
                     {expandedCategory === category.category && (
@@ -214,8 +229,12 @@ const AppContent = () => {
               </Link>
             </div>
             <div className="mt-8 md:mt-0 md:order-1 text-center md:text-left">
-              <p className="text-sm text-gray-500">© 2025 Mediaforge. All rights reserved.</p>
-              <p className="text-xs text-gray-400 mt-1">Crafted with ❤️ to simplify your media tasks.</p>
+              <p className="text-sm text-gray-500">
+                © 2025 atmikgoswami. All rights reserved.
+              </p>
+              <p className="text-xs text-gray-400 mt-1">
+                Crafted with ❤️ to simplify your media tasks.
+              </p>
             </div>
           </div>
         </div>
