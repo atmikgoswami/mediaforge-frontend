@@ -227,7 +227,7 @@ export default function ResizeImage() {
     // close any previous socket
     if (socketRef.current) socketRef.current.close();
 
-    const socket = new WebSocket(`ws://localhost:8080/ws/progress/${taskId}`);
+    const socket = new WebSocket(`${import.meta.env.VITE_BACKEND_WS_URL}/${taskId}`);
     socketRef.current = socket; // save for later cleanup
 
     socket.onopen = () => {
